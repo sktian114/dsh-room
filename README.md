@@ -7,6 +7,8 @@
 > 一句话原理：房间代理把房客的浏览器请求改写成 loopback 再转给房主的 DSH，
 > 于是 DSH 的 Host/Origin 栅栏永远看到 `127.0.0.1`，不需要改 DSH 任何配置。
 
+代码仓库：[sktian114/dsh-room](https://github.com/sktian114/dsh-room)（私有）
+
 ## 实测状态（Windows + DSH Desktop）
 
 在真实 Desktop 实例上跑过一遍，不是纸上设计：
