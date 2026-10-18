@@ -1,9 +1,9 @@
 {
-  "roomUrl": "http://172.16.1.130:8787/",
+  "roomUrl": "http://192.168.1.5:8787/",
   "version": "Chrome/155.0.8059.80",
   "baseline": {
-    "url": "http://172.16.1.130:8787/",
-    "origin": "http://172.16.1.130:8787",
+    "url": "http://192.168.1.5:8787/",
+    "origin": "http://192.168.1.5:8787",
     "secure": false,
     "clipboard": false,
     "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
@@ -65,9 +65,9 @@
         "tag": "DIV",
         "cls": "dsh-room-panel",
         "x": 8,
-        "y": 256,
+        "y": 157,
         "w": 374,
-        "h": 580,
+        "h": 679,
         "visible": true
       }
     ],
@@ -111,9 +111,9 @@
   "panel": {
     "rect": {
       "x": 8,
-      "y": 256,
+      "y": 157,
       "w": 374,
-      "h": 580,
+      "h": 679,
       "bottom": 836,
       "right": 382
     },
@@ -149,13 +149,13 @@
       "h": 32
     },
     "memberRows": [
-      "P PC-202209181648 房主",
-      "访 访客8356 刚刚",
-      "访 访客7133 刚刚"
+      "示 示例房主 房主",
+      "阿 阿伟 刚刚",
+      "访 访客3492 刚刚"
     ],
     "hasError": false,
     "errorText": null,
-    "bodyText": "已加入房间 已连接 · 延迟 24ms · http://172.16.1.130:8787 已连接 你已经在房间里了——当前这个页面就是房主的工作台，工作区是他的文件夹。 房间成员 3 P PC-202209181648 房主 访 访客8356 刚刚 访 访客7133 刚刚 房主工作区 复制地址 工作区是空的",
+    "bodyText": "示例房间 已连接 · 延迟 12ms · http://192.168.1.5:8787 已连接 你已经在房间里了——当前这个页面就是房主的工作台，工作区是他的文件夹。 房间成员 3 示 示例房主 房主 阿 阿伟 刚刚 访 访客3492 刚刚 房主工作区 复制地址 C:\\demo\\my-project docs src tests package.json README.md TODO.md",
     "launchSize": {
       "w": 78,
       "h": 32
@@ -248,7 +248,7 @@
     {
       "item": "面板/已打开",
       "ok": true,
-      "detail": "{\"x\":8,\"y\":256,\"w\":374,\"h\":580,\"bottom\":836,\"right\":382}"
+      "detail": "{\"x\":8,\"y\":157,\"w\":374,\"h\":679,\"bottom\":836,\"right\":382}"
     },
     {
       "item": "面板/访客自动加入后默认落在访客页签",
@@ -263,12 +263,12 @@
     {
       "item": "面板/成员列表已包含自己",
       "ok": true,
-      "detail": "[\"P PC-202209181648 房主\",\"访 访客8356 刚刚\",\"访 访客7133 刚刚\"]"
+      "detail": "[\"示 示例房主 房主\",\"阿 阿伟 刚刚\",\"访 访客3492 刚刚\"]"
     },
     {
       "item": "面板/同一台手机不会重复加入",
       "ok": true,
-      "detail": "[\"P PC-202209181648 房主\",\"访 访客8356 刚刚\",\"访 访客7133 刚刚\"]"
+      "detail": "[\"示 示例房主 房主\",\"阿 阿伟 刚刚\",\"访 访客3492 刚刚\"]"
     },
     {
       "item": "面板/不超出视口底部",
@@ -278,7 +278,7 @@
     {
       "item": "面板/不超出视口顶部",
       "ok": true,
-      "detail": "top=256"
+      "detail": "top=157"
     },
     {
       "item": "面板/不超出视口宽度",
@@ -313,12 +313,12 @@
     {
       "item": "剪贴板/失败时弹出长按复制面板",
       "ok": true,
-      "detail": "{\"clicked\":true,\"fallbackShown\":true,\"fallbackText\":\"http://172.16.1.130:8787\",\"selectedLength\":24}"
+      "detail": "{\"clicked\":true,\"fallbackShown\":true,\"fallbackText\":\"http://192.168.1.5:8787\",\"selectedLength\":23}"
     },
     {
       "item": "面板/视口收缩后不越界",
       "ok": true,
-      "detail": "{\"bottom\":742,\"h\":580,\"innerHeight\":750,\"maxHeight\":\"734px\"}"
+      "detail": "{\"bottom\":742,\"h\":679,\"innerHeight\":750,\"maxHeight\":\"734px\"}"
     },
     {
       "item": "剪贴板/非 HTTPS 有兜底路径",
@@ -343,7 +343,7 @@
     {
       "item": "视口 430×932/面板不越界",
       "ok": true,
-      "detail": "{\"x\":8,\"y\":218,\"w\":414,\"h\":706,\"bottom\":924,\"innerHeight\":932,\"maxHeight\":\"916px\"}"
+      "detail": "{\"x\":8,\"y\":245,\"w\":414,\"h\":679,\"bottom\":924,\"innerHeight\":932,\"maxHeight\":\"916px\"}"
     },
     {
       "item": "视口 844×390/无横向溢出",
@@ -388,7 +388,7 @@
     {
       "item": "访客/联机按钮标题显示房间身份",
       "ok": true,
-      "detail": "title=\"已在房间里：访客7133\""
+      "detail": "title=\"已在房间里：访客3492\""
     },
     {
       "item": "重入/强制清理生效",
@@ -398,7 +398,7 @@
     {
       "item": "重入/失效令牌返回 401",
       "ok": true,
-      "detail": "status=401 stale=false"
+      "detail": "status=401 stale=true"
     },
     {
       "item": "重入/回到前台自动重新入房",
@@ -408,12 +408,12 @@
     {
       "item": "重入/仍然用原昵称",
       "ok": true,
-      "detail": "name=\"访客7133\""
+      "detail": "name=\"访客3492\""
     },
     {
       "item": "重入/成员列表恢复（不再为 0）",
       "ok": true,
-      "detail": "members=[\"PC-202209181648\",\"访客8356\",\"访客7133\"]"
+      "detail": "members=[\"示例房主\",\"阿伟\",\"访客3492\"]"
     }
   ]
 }

@@ -25,12 +25,21 @@
 
 import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, hostname, homedir } from 'node:os'
-import { readFileSync, statSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, sep, basename } from 'node:path'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createGuestGuard } from './lib/guard.mjs'
+import { createFrameTransformer } from './lib/frames.mjs'
 
 const NAME = 'dsh-room'
-const VERSION = '0.1.0'
+// 版本号以 package.json 为唯一来源，避免发版时两处不一致。
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version || '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 const PREFIX = '/room'
 const DEFAULT_PORT = 8787
 const BODY_LIMIT = 16 * 1024
@@ -442,6 +451,124 @@ function setup(ctx, config) {
   const joinAttempts = new Map()
   const handshakes = new Map()
 
+  // 每个房客 TCP 连接一份守卫状态（streamId→端点、workspaceId→路径 的对应关系）
+  const sharedWorkspaces = new Map()
+  const guards = new WeakMap()
+  function guardFor(socket) {
+    let guard = guards.get(socket)
+    if (!guard) {
+      guard = createGuestGuard({ isBlockedPath, modeForPath, workspaces: sharedWorkspaces, sessionModes: sharedSessionModes })
+      guards.set(socket, guard)
+    }
+    return guard
+  }
+
+  // 房客新建的会话：代理登记 sessionId → 房主策略对应的权限预设，
+  // 在 session/created 时钉死（只读 / 仅工作区可写 / 完全权限）。
+  const guestSessions = new Map()
+  const sharedSessionModes = new Map()
+
+  /* ───────────────────────── 工作区共享策略 ─────────────────────────
+   * 默认全部封锁：房客连工作区名字都看不到，房主在面板里逐个「开放」并选权限。
+   * 权限四档：
+   *   blocked   不可见、不可列目录
+   *   readonly  可看名字/文件树，不可改
+   *   write     仅在该工作区内修改（工作区沙箱）
+   *   full      完全权限（等同房主）
+   * 条目可以是工作区根目录，也可以是工作区里的某个子文件夹；最长前缀生效。
+   * 策略落盘在 ~/.dsh/dsh-room-policy.json，重启后仍然有效。
+   */
+  const POLICY_FILE = join(dshHome(), 'dsh-room-policy.json')
+  const POLICY_MODES = ['blocked', 'readonly', 'write', 'full']
+  const POLICY_MAX_ENTRIES = 200
+  let policy = loadPolicy()
+
+  function normalizePath(value) {
+    try {
+      const abs = resolve(String(value || ''))
+      return process.platform === 'win32' ? abs.toLowerCase() : abs
+    } catch { return '' }
+  }
+
+  function sanitizePolicy(data) {
+    if (!data || typeof data !== 'object') return null
+    const defaultMode = POLICY_MODES.includes(data.defaultMode) ? data.defaultMode : 'blocked'
+    const entries = []
+    const seen = new Set()
+    for (const raw of Array.isArray(data.entries) ? data.entries.slice(0, POLICY_MAX_ENTRIES) : []) {
+      if (!raw || typeof raw !== 'object') continue
+      const rawPath = cleanText(raw.path, 1024)
+      if (!rawPath) continue
+      let abs
+      try { abs = resolve(rawPath) } catch { continue }
+      const key = normalizePath(abs)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      entries.push({ path: abs, mode: POLICY_MODES.includes(raw.mode) ? raw.mode : 'blocked' })
+    }
+    return { version: 1, defaultMode, entries }
+  }
+
+  function loadPolicy() {
+    try {
+      const parsed = JSON.parse(readFileSync(POLICY_FILE, 'utf8'))
+      return sanitizePolicy(parsed) || { version: 1, defaultMode: 'blocked', entries: [] }
+    } catch {
+      return { version: 1, defaultMode: 'blocked', entries: [] }
+    }
+  }
+
+  function savePolicy(next) {
+    policy = next
+    try {
+      writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2), 'utf8')
+    } catch (error) {
+      say('warn', '[' + NAME + '] 保存工作区策略失败：' + (error && error.message ? error.message : error))
+    }
+  }
+
+  // 最长前缀匹配：子文件夹的条目覆盖工作区根目录的条目。
+  function modeForPath(target) {
+    const key = normalizePath(target)
+    if (!key) return 'blocked'
+    const separator = process.platform === 'win32' ? '\\' : '/'
+    let best = -1
+    let mode = policy.defaultMode
+    for (const entry of policy.entries) {
+      const base = normalizePath(entry.path)
+      if (!base) continue
+      if (key === base || key.startsWith(base.endsWith(separator) ? base : base + separator)) {
+        if (base.length > best) { best = base.length; mode = entry.mode }
+      }
+    }
+    return mode
+  }
+
+  function isBlockedPath(target) {
+    return modeForPath(target) === 'blocked'
+  }
+
+  // 房客能看见的工作区清单：被封锁的直接不出现在返回里（名字也不给）。
+  function guestWorkspaces() {
+    const list = []
+    for (const item of workspacesFromHome()) {
+      const mode = modeForPath(item.path)
+      if (mode === 'blocked') continue
+      list.push({ id: item.id, title: item.title, mode })
+    }
+    return list
+  }
+
+  // 文件树里被封锁的子文件夹 / 文件同样隐藏。
+  function visibleEntries(root, rel) {
+    const base = resolve(root)
+    const entries = listDir(root, rel)
+    return entries.filter((entry) => {
+      const abs = resolve(base, String(entry.path || entry.name))
+      return !isBlockedPath(abs)
+    })
+  }
+
   function launchToken() {
     try {
       const connection = ctx.connection || (ctx.get && ctx.get('connection'))
@@ -535,25 +662,34 @@ function setup(ctx, config) {
   }
 
   function publicRoom() {
+    const workspaceMode = room.active ? modeForPath(room.workspace) : 'blocked'
     return {
       id: room.id,
       name: room.name,
       port: room.port,
       startedAt: room.startedAt,
       needsCode: Boolean(room.code),
-      workspace: basename(room.workspace || ''),
+      // 工作区被封锁时，连目录名都不能出现在房客的响应里。
+      workspace: workspaceMode === 'blocked' ? '' : basename(room.workspace || ''),
+      workspaceMode,
     }
   }
 
   function workspacePayload() {
+    const mode = room.workspace ? modeForPath(room.workspace) : 'blocked'
+    if (mode === 'blocked') {
+      return { available: false, mode: 'blocked', name: '', entries: [] }
+    }
     try {
       return {
+        available: true,
+        mode,
         root: room.workspace,
         name: basename(room.workspace || '') || 'workspace',
-        entries: listDir(room.workspace, ''),
+        entries: visibleEntries(room.workspace, ''),
       }
     } catch (error) {
-      return { root: room.workspace, name: basename(room.workspace || ''), entries: [], error: String(error && error.code || error) }
+      return { available: true, mode, root: room.workspace, name: basename(room.workspace || ''), entries: [], error: String(error && error.code || error) }
     }
   }
 
@@ -579,7 +715,12 @@ function setup(ctx, config) {
   }
 
   function createRoomServer() {
-    const server = createServer((req, res) => { void handleProxy(req, res) })
+    const server = createServer((req, res) => {
+    try { void handleProxy(req, res) } catch (error) {
+      say('error', '[' + NAME + '] 代理请求异常：' + (error && error.stack ? error.stack : error))
+      try { res.destroy() } catch { /* 忽略 */ }
+    }
+  })
     server.on('upgrade', (req, socket, head) => handleUpgrade(req, socket, head))
     server.on('connection', (socket) => {
       room.sockets.add(socket)
@@ -636,6 +777,20 @@ function setup(ctx, config) {
 
   /* ───────────────────────── 代理 ───────────────────────── */
 
+  // 需要读 body 才能判定的房客端点（与 lib/guard.mjs 的 INSPECT_ENDPOINTS 保持一致）。
+  const INSPECT_BODY_ENDPOINTS = new Set([
+    '/api/session/create',
+    '/api/session/prompt',
+    '/api/session/cancel',
+    '/api/session/updateQueue',
+    '/api/session/rename',
+    '/api/session/fork',
+    '/api/session/selectModel',
+    '/api/session/openWorkspacePath',
+    '/api/commands/execute',
+    '/api/settings/update',
+  ])
+
   function handleProxy(req, res) {
     let pathname = '/'
     try { pathname = new URL(String(req.url || '/'), 'http://room.invalid').pathname } catch { pathname = '/' }
@@ -646,6 +801,19 @@ function setup(ctx, config) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('host-only')
       return
+    }
+
+    // 房客（非 loopback 来源）按工作区策略拦截：审批回答 + 被封锁路径的文件读取。
+    const guest = !isLoopback(req.socket.remoteAddress) ? guardFor(req.socket) : null
+    if (guest) {
+      let requestUrl = null
+      try { requestUrl = new URL(String(req.url || '/'), 'http://room.invalid') } catch { requestUrl = null }
+      const verdict = requestUrl ? guest.judgeRequest(pathname, req.method, requestUrl) : null
+      if (verdict === 'approval-owner-only' || verdict === 'workspace-blocked') {
+        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ ok: false, error: verdict }))
+        return
+      }
     }
 
     const headers = stripHopByHop(req.headers)
@@ -692,8 +860,19 @@ function setup(ctx, config) {
       }
     }
 
+    // 需要读/改写的响应（房客的会话列表、会话创建回执）先要求上游不压缩，
+    // 否则我们改写明文 body 但保留 content-encoding，浏览器会 ERR_CONTENT_DECODING_FAILED。
+    if (guest && (pathname === '/api/session/list' || pathname === '/api/session/create')) {
+      delete headers['accept-encoding']
+    }
+
     const inboundHost = String(req.headers.host || '')
     const inboundProto = String(req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http'))
+
+    // 房客的信封需要先读 body 才能判定（session/create 的落点、/permission 与 settings 改写入口）。
+    const inspectBody = Boolean(guest) && req.method === 'POST' &&
+      INSPECT_BODY_ENDPOINTS.has(pathname)
+    let pendingCreate = null
 
     const upstream = httpRequest({
       host: '127.0.0.1',
@@ -705,6 +884,23 @@ function setup(ctx, config) {
     }, (response) => {
       const status = response.statusCode || 502
       const type = String(response.headers['content-type'] || '')
+      // 浏览器里残留着上一个 DSH 进程的 dsh-auth cookie 时，宿主会回 401
+      // （"dsh web authentication required; reopen the URL printed by dsh web"）。
+      // 用本进程的启动令牌重跳一次，让宿主重新下发有效 cookie。
+      if (status === 401 && isIndex) {
+        response.resume()
+        const token = launchToken()
+        if (token) {
+          const location = inboundProto + '://' + inboundHost + addToken(path, token)
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(302, { location, 'cache-control': 'no-store' })
+            res.end()
+          }
+        } else if (!res.headersSent && !res.writableEnded) {
+          sendHtml(res, 200, GATE_PAGE)
+        }
+        return
+      }
       if (status === 403 && isIndex && /text\/plain/i.test(type)) {
         const chunks = []
         let total = 0
@@ -713,11 +909,19 @@ function setup(ctx, config) {
           if (total <= 4096) chunks.push(chunk)
         })
         response.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8').trim().toLowerCase()
-          if (text === 'forbidden' || text.includes('forbidden')) sendHtml(res, 200, GATE_PAGE)
-          else {
-            if (!res.headersSent) res.writeHead(status, response.headers)
-            res.end(Buffer.concat(chunks))
+          try {
+            const text = Buffer.concat(chunks).toString('utf8').trim().toLowerCase()
+            if (text === 'forbidden' || text.includes('forbidden')) {
+              if (!res.headersSent && !res.writableEnded) sendHtml(res, 200, GATE_PAGE)
+              return
+            }
+            if (!res.headersSent && !res.writableEnded) {
+              res.writeHead(status, response.headers)
+              res.end(Buffer.concat(chunks))
+            } else { try { res.destroy() } catch { /* 忽略 */ } }
+          } catch (error) {
+            say('warn', '[' + NAME + '] 闸门页处理异常：' + (error && error.message ? error.message : error))
+            try { res.destroy() } catch { /* 忽略 */ }
           }
         })
         response.on('error', () => { try { res.destroy() } catch { /* 忽略 */ } })
@@ -730,8 +934,56 @@ function setup(ctx, config) {
       if (outHeaders['set-cookie']) {
         outHeaders['set-cookie'] = rewriteSetCookie(outHeaders['set-cookie'], inboundProto)
       }
-      res.writeHead(status, outHeaders)
-      response.pipe(res)
+      if (guest && pathname === '/api/session/list' && /application\/json/i.test(type)) {
+        // 会话列表带 cwd：按策略过滤掉被封锁工作区里的会话，避免路径和标题泄漏。
+        const chunks = []
+        response.on('data', (chunk) => chunks.push(chunk))
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          const filtered = guest.filterResponse(pathname, text) || text
+          delete outHeaders['content-encoding']
+          delete outHeaders['content-length']
+          outHeaders['content-type'] = 'application/json; charset=utf-8'
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(status, outHeaders)
+            res.end(filtered)
+          } else { try { res.destroy() } catch { /* 忽略 */ } }
+        })
+        response.on('error', () => { try { res.destroy() } catch { /* 忽略 */ } })
+        return
+      }
+      if (guest && pathname === '/api/session/create' && /application\/json/i.test(type)) {
+        // 记下房客新建的会话，交给 session/created 钉权限。
+        const chunks = []
+        response.on('data', (chunk) => chunks.push(chunk))
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          try {
+            const payload = JSON.parse(text)
+            const value = payload && payload.result && payload.result.value
+            const sessionId = value && value.sessionId
+            if (sessionId && pendingCreate) {
+              guestSessions.set(String(sessionId), { mode: pendingCreate.mode })
+              guest.rememberSessionMode(String(sessionId), pendingCreate.mode)
+            }
+          } catch { /* 忽略 */ }
+          delete outHeaders['content-encoding']
+          delete outHeaders['content-length']
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(status, outHeaders)
+            res.end(text)
+          } else { try { res.destroy() } catch { /* 忽略 */ } }
+        })
+        response.on('error', () => { try { res.destroy() } catch { /* 忽略 */ } })
+        return
+      }
+      if (!res.headersSent && !res.writableEnded) {
+        res.writeHead(status, outHeaders)
+        response.pipe(res)
+      } else {
+        response.resume()
+        try { res.destroy() } catch { /* 忽略 */ }
+      }
     })
 
     upstream.on('error', (error) => {
@@ -740,7 +992,38 @@ function setup(ctx, config) {
         String(error && error.message ? error.message : error).replace(/[<>&]/g, '') + '</body>')
     })
     req.on('error', () => { try { upstream.destroy() } catch { /* 忽略 */ } })
-    req.pipe(upstream)
+    if (inspectBody) {
+      const chunks = []
+      let total = 0
+      let aborted = false
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 2 * 1024 * 1024) {
+          aborted = true
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'payload-too-large' }))
+          } else { try { res.destroy() } catch { /* 忽略 */ } }
+          try { upstream.destroy() } catch { /* 忽略 */ }
+          req.resume()
+          return
+        }
+        chunks.push(chunk)
+      })
+      req.on('end', () => {
+        if (aborted) return
+        const text = Buffer.concat(chunks).toString('utf8')
+        const verdict = guest.judgeBody(pathname, text)
+        if (verdict && verdict.deny) {
+          sendJson(res, 403, { ok: false, error: verdict.deny })
+          return
+        }
+        if (verdict && verdict.create) pendingCreate = verdict.create
+        upstream.end(text)
+      })
+    } else {
+      req.pipe(upstream)
+    }
   }
 
   function handleUpgrade(req, socket, head) {
@@ -759,6 +1042,9 @@ function setup(ctx, config) {
       agent: false,
     })
 
+    const isMux = String(req.url || '').includes('/api/remote.mux')
+    const guestGuard = isMux && !isLoopback(req.socket.remoteAddress) ? guardFor(req.socket) : null
+
     upstream.on('upgrade', (response, upstreamSocket, upstreamHead) => {
       const lines = ['HTTP/1.1 101 Switching Protocols']
       for (const key of Object.keys(response.headers)) {
@@ -766,14 +1052,47 @@ function setup(ctx, config) {
         lines.push(key + ': ' + (Array.isArray(value) ? value.join(', ') : value))
       }
       try { socket.write(lines.join('\r\n') + '\r\n\r\n') } catch { /* 忽略 */ }
-      if (upstreamHead && upstreamHead.length) {
-        try { socket.write(upstreamHead) } catch { /* 忽略 */ }
+      if (guestGuard) {
+        // 帧级过滤：只对房客的 remote.mux 生效（协议见 docs/protocol-notes.md）。
+        const toClient = createFrameTransformer({
+          masked: false,
+          onText(text) {
+            let frame
+            try { frame = JSON.parse(text) } catch { return undefined }
+            const next = guestGuard.serverFrame(frame)
+            if (!next) return null
+            // 过滤器是原地修改，必须重新序列化，否则转发的是旧字节（踩过）。
+            return JSON.stringify(next)
+          },
+        })
+        const toServer = createFrameTransformer({
+          masked: true,
+          onText(text) {
+            let frame
+            try { frame = JSON.parse(text) } catch { return undefined }
+            const next = guestGuard.clientFrame(frame)
+            if (!next) return null
+            return JSON.stringify(next)
+          },
+        })
+        if (upstreamHead && upstreamHead.length) {
+          try { socket.write(toClient.push(upstreamHead)) } catch { /* 忽略 */ }
+        }
+        if (head && head.length) {
+          try { upstreamSocket.write(toServer.push(head)) } catch { /* 忽略 */ }
+        }
+        upstreamSocket.on('data', (chunk) => { try { socket.write(toClient.push(chunk)) } catch { /* 忽略 */ } })
+        socket.on('data', (chunk) => { try { upstreamSocket.write(toServer.push(chunk)) } catch { /* 忽略 */ } })
+      } else {
+        if (upstreamHead && upstreamHead.length) {
+          try { socket.write(upstreamHead) } catch { /* 忽略 */ }
+        }
+        if (head && head.length) {
+          try { upstreamSocket.write(head) } catch { /* 忽略 */ }
+        }
+        upstreamSocket.pipe(socket, { end: false })
+        socket.pipe(upstreamSocket, { end: false })
       }
-      if (head && head.length) {
-        try { upstreamSocket.write(head) } catch { /* 忽略 */ }
-      }
-      upstreamSocket.pipe(socket, { end: false })
-      socket.pipe(upstreamSocket, { end: false })
       const close = () => {
         try { upstreamSocket.destroy() } catch { /* 忽略 */ }
         try { socket.destroy() } catch { /* 忽略 */ }
@@ -865,6 +1184,7 @@ function setup(ctx, config) {
           self: { id, name },
           room: publicRoom(),
           members: memberList(),
+          workspaces: guestWorkspaces(),
           workspace: workspacePayload(),
         }, cors)
         return
@@ -886,6 +1206,7 @@ function setup(ctx, config) {
           ok: true,
           room: publicRoom(),
           members: memberList(),
+          workspaces: guestWorkspaces(),
           workspace: workspacePayload(),
         }, cors)
         return
@@ -902,9 +1223,14 @@ function setup(ctx, config) {
           return
         }
         const rel = String(url.searchParams.get('path') || '').replace(/\\/g, '/').replace(/^\/+/, '')
+        // 目录级策略：未开放（或被封锁的子文件夹）连列目录都不允许，避免路径泄漏。
+        if (isBlockedPath(join(room.workspace, rel))) {
+          sendJson(res, 403, { ok: false, error: 'workspace-blocked' }, cors)
+          return
+        }
         try {
-          const entries = listDir(room.workspace, rel)
-          sendJson(res, 200, { ok: true, path: rel, entries }, cors)
+          const entries = visibleEntries(room.workspace, rel)
+          sendJson(res, 200, { ok: true, path: rel, mode: modeForPath(join(room.workspace, rel)), entries }, cors)
         } catch (error) {
           sendJson(res, 400, { ok: false, error: String(error && error.code || 'list-failed') }, cors)
         }
@@ -927,6 +1253,7 @@ function setup(ctx, config) {
           ok: true,
           room: publicRoom(),
           members: memberList(),
+          workspaces: guestWorkspaces(),
           workspace: workspacePayload(),
         }, cors)
         return
@@ -959,13 +1286,55 @@ function setup(ctx, config) {
           } : null,
           urls: room.active ? urlsFor(room.port) : [],
           members: room.active ? memberList() : [],
-          workspaces: workspacesFromHome(),
+          workspaces: workspacesFromHome().map((item) => ({ ...item, mode: modeForPath(item.path) })),
           defaultWorkspace: cfg.workspace || defaultWorkspace(),
+          roomWorkspaceMode: room.active ? modeForPath(room.workspace) : 'blocked',
+          policy,
           workspace: room.active ? workspacePayload() : null,
           hostToken,
           version: VERSION,
           dshPort: webPort,
         }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/policy' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, policy }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/policy' && req.method === 'POST') {
+        const body = (await readJson(req)) || {}
+        const next = sanitizePolicy(body)
+        if (!next) {
+          sendJson(res, 400, { ok: false, error: 'bad-policy' }, cors)
+          return
+        }
+        savePolicy(next)
+        say('info', '[' + NAME + '] 工作区策略已更新：' + next.entries.length + ' 条，默认 ' + next.defaultMode)
+        sendJson(res, 200, { ok: true, policy }, cors)
+        return
+      }
+
+      // 房主端的文件夹选择器：列任意绝对路径，方便把「工作区里的某个文件夹」单独开放。
+      if (path === PREFIX + '/api/host/fs' && req.method === 'GET') {
+        const target = cleanText(url.searchParams.get('path') || '', 1024)
+        if (!target) {
+          sendJson(res, 400, { ok: false, error: 'no-path' }, cors)
+          return
+        }
+        try {
+          const abs = resolve(target)
+          const entries = listDir(abs, '').map((entry) => ({
+            name: entry.name,
+            type: entry.type,
+            path: resolve(abs, entry.name),
+            mode: modeForPath(resolve(abs, entry.name)),
+          }))
+          sendJson(res, 200, { ok: true, path: abs, entries }, cors)
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: String(error && error.code || 'list-failed') }, cors)
+        }
         return
       }
 
@@ -1037,6 +1406,35 @@ function setup(ctx, config) {
   }
 
   say('info', '[' + NAME + '] 就绪：web=' + webPort + '，等待创建房间')
+
+  // 房客会话的权限由房主策略钉死：readonly → read-only，write → workspace-write，full → danger-full-access。
+  // 房客的 /permission 与 settings(permission) 写入口已在代理层拒绝，这里是纵深防御的第二层。
+  const PRESET_FOR_MODE = { readonly: 'read-only', write: 'workspace-write', full: 'danger-full-access' }
+  if (typeof ctx.on === 'function') {
+    try {
+      ctx.on('session/created', (session) => {
+        const id = String((session && session.id) || '')
+        const record = guestSessions.get(id)
+        if (!record) return
+        guestSessions.delete(id)
+        const presets = ctx.permissionPresets
+        const name = PRESET_FOR_MODE[record.mode]
+        if (!name || !presets || typeof presets.set !== 'function') return
+        try {
+          if (Array.isArray(presets.names) && !presets.names.includes(name)) {
+            say('warn', '[' + NAME + '] 当前 DSH 没有权限预设 ' + name + '，房客会话保持默认权限')
+            return
+          }
+          presets.set(session, name)
+          say('info', '[' + NAME + '] 房客会话 ' + id.slice(0, 18) + ' 权限钉为 ' + name)
+        } catch (error) {
+          say('warn', '[' + NAME + '] 设置房客会话权限失败：' + (error && error.message ? error.message : error))
+        }
+      })
+    } catch (error) {
+      say('warn', '[' + NAME + '] 注册 session/created 钩子失败：' + (error && error.message ? error.message : error))
+    }
+  }
 
   return async () => {
     try { if (typeof offRoute === 'function') offRoute() } catch { /* 忽略 */ }

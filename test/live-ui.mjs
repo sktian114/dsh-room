@@ -150,6 +150,17 @@ console.log('PANEL', panelInfo)
 await shot('live-2.png')
 
 // 复制邀请 → toast
+// 截图用替身：无头 Chrome 里 clipboard 与 execCommand 都会被拒绝，真机上有用户手势能成功；
+// 不替身就会把「复制失败」的 toast 截进 README。
+await evaluate(`(() => {
+  try {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.resolve() },
+    });
+    return true;
+  } catch (error) { return false; }
+})()`)
 await clickText('复制邀请')
 await sleep(300)
 const toastInfo = await evaluate(`(() => {

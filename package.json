@@ -1,9 +1,18 @@
 {
-  "name": "dsh-room",
+  "name": "@sktian114/dsh-room",
   "version": "0.1.0",
-  "private": true,
-  "description": "DSH 房间联机：在蒲公英等组网内输入 房主地址:端口 即可加入房间，共享房主工作区与会话",
+  "description": "DSH 房间联机：同一组网内把 DSH 工作台共享给好友，手机浏览器直接加入；支持工作区封锁 / 只读 / 仅工作区可写 / 完全权限，并保留房主审批权。",
   "type": "module",
+  "license": "MIT",
+  "author": "sktian114",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sktian114/dsh-room.git"
+  },
+  "homepage": "https://github.com/sktian114/dsh-room#readme",
+  "bugs": {
+    "url": "https://github.com/sktian114/dsh-room/issues"
+  },
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs",
@@ -12,16 +21,20 @@
   },
   "files": [
     "index.mjs",
-    "lib/client.js",
+    "lib/",
     "cordis.patch.yml",
     "README.md",
-    "install.ps1"
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "install.ps1",
+    "install.mjs"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/host.test.mjs && node test/client.test.mjs",
+    "test": "node test/guard.test.mjs && node test/host.test.mjs && node test/client.test.mjs",
     "preview": "node test/render-preview.mjs"
   },
   "keywords": [
@@ -30,8 +43,12 @@
     "deepseek-harness",
     "room",
     "lan",
-    "remote"
+    "remote",
+    "pairing"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -120,25 +120,46 @@ const hostViewTexts = texts(view.HostView({
     urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '蒲公英' }],
     members,
     hostToken: 'abc',
-    workspaces: [],
-    workspace: { root: 'E:\\proj', entries },
+    policy: { defaultMode: 'blocked', entries: [] },
+    workspaces: [{ id: 'w1', title: 'proj', path: 'E:\\proj', mode: 'readonly' }],
+    workspace: { available: true, mode: 'readonly', root: 'E:\\proj', entries },
   },
   error: '',
   onRefresh() {},
 }))
-for (const expected of ['老王的开发间', '口令 1234', 'http://172.16.1.130:8787', '房间成员', '老王', '阿伟', '房主工作区', 'src', 'README.md', '停止房间']) {
+for (const expected of ['老王的开发间', '口令 1234', 'http://172.16.1.130:8787', '房间成员', '老王', '阿伟', '房主工作区', '共享权限', 'src', 'README.md', '停止房间']) {
   assert.ok(hostViewTexts.includes(expected), 'host view missing: ' + expected)
 }
 
 const guestViewTexts = texts(view.GuestView({
   guest: { addr: 'http://172.16.1.130:8787', token: 'token-1', name: '阿伟' },
-  state: { ok: true, room: { name: '老王的开发间' }, members, workspace: { root: 'E:\\proj', entries } },
+  state: { ok: true, room: { name: '老王的开发间' }, members, workspaces: [{ id: 'w1', title: '开发间', mode: 'readonly' }], workspace: { available: true, mode: 'readonly', root: 'E:\\proj', entries } },
   onJoin() {},
   onState() {},
 }))
 for (const expected of ['已连接', '进入房主工作台', '房间成员', '阿伟', 'README.md', '离开房间']) {
   assert.ok(guestViewTexts.includes(expected), 'guest view missing: ' + expected)
 }
+
+// 工作区默认封锁：房客面板里不能出现工作区名字/路径，只显示「还没开放」
+const guestBlockedTexts = texts(view.GuestView({
+  guest: { addr: 'http://172.16.1.130:8787', token: 'token-1', name: '阿伟' },
+  state: { ok: true, room: { name: '老王的开发间', workspace: '', workspaceMode: 'blocked' }, members, workspaces: [], workspace: { available: false, mode: 'blocked', name: '', entries: [] } },
+  onJoin() {},
+  onState() {},
+}))
+assert.ok(guestBlockedTexts.includes('房主还没有开放任何工作区。'), 'guest should see closed state')
+assert.equal(guestBlockedTexts.some((text) => text.includes('E:\\proj')), false, 'blocked workspace path must not leak to guest')
+assert.equal(guestBlockedTexts.some((text) => text.includes('README.md')), false, 'blocked workspace entries must not leak to guest')
+
+// 只读工作区：房客看到「只读」徽标
+const guestReadonlyTexts = texts(view.GuestView({
+  guest: { addr: 'http://172.16.1.130:8787', token: 'token-1', name: '阿伟' },
+  state: { ok: true, room: { name: '老王的开发间', workspaceMode: 'readonly' }, members, workspaces: [{ id: 'w1', title: '开发间', mode: 'readonly' }], workspace: { available: true, mode: 'readonly', root: 'E:\\proj', entries } },
+  onJoin() {},
+  onState() {},
+}))
+assert.ok(guestReadonlyTexts.includes('只读'), 'readonly badge missing')
 
 const joinTree = view.GuestView({ guest: null, state: null, onJoin() {}, onState() {} })
 const joinFormTexts = texts(joinTree)
@@ -164,7 +185,7 @@ for (const expected of ['房间联机', '房主', '访客']) {
 // 心跳保活：guestState 由父组件持有，面板直接渲染成员（手机切后台回来不该是 0 人）
 const guestPanelTexts = texts(moduleExports.__test.Panel({
   guest: { addr: 'http://172.16.1.130:8787', token: 'token-1', name: '阿伟' },
-  guestState: { ok: true, room: { name: '老王的开发间' }, members, workspace: { root: 'E:\\proj', entries } },
+  guestState: { ok: true, room: { name: '老王的开发间' }, members, workspaces: [{ id: 'w1', title: '开发间', mode: 'readonly' }], workspace: { available: true, mode: 'readonly', root: 'E:\\proj', entries } },
   onClose() {},
 }))
 for (const expected of ['老王的开发间', '房间成员', '阿伟']) {

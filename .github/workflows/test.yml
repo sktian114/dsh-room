@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # 目标平台是 Windows 上的 DSH Desktop；同时验证 Node 20（engines 下限）与 22。
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: 离线测试（guard + host + client）
+        run: npm test
+      - name: 检查 npm 包内容
+        run: npm pack --dry-run

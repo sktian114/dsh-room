@@ -121,17 +121,37 @@
 
 ### 方式 A：一键脚本（推荐）
 
+**Windows（仓库里直接跑）**
+
 在仓库根目录（`dsh-room` 的上一级）打开 PowerShell：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\dsh-room\install.ps1
 ```
 
+**任意平台（Node ≥ 20）**
+
+```bash
+node dsh-room/install.mjs            # 装到 desktop profile
+node dsh-room/install.mjs --uninstall
+```
+
 脚本会：
 
-- 把 `dsh-room` 复制到 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-room`
-- 备份并追加 `cordis.patch.yml` 的挂载项
+- 把插件复制到 `<DSH_HOME>/profiles/<profile>/node_modules/@sktian114/dsh-room`
+  （默认 `%USERPROFILE%\.dsh\profiles\desktop`）
+- 备份并追加 `cordis.patch.yml` 的挂载项（幂等，重复跑不会重复写）
+- 清掉旧版留下的 `node_modules\dsh-room`，避免挂载两份
 - 打印重启提示
+
+**从 npm 装（发布后）**
+
+```bash
+npm i -g @sktian114/dsh-room   # 或者放在任意目录用 npx
+```
+
+然后仍然跑一次 `node install.mjs`，把包复制进 profile 并写 patch——
+桌面版 profile 不允许 `dsh plugin add`，只能这样挂。
 
 然后**完全退出并重启 DSH**（托盘退出，不是关窗口）。
 如果只是想让新装/更新后的插件生效：宿主插件会在 patch 变化时热加载，
@@ -140,7 +160,8 @@ powershell -ExecutionPolicy Bypass -File .\dsh-room\install.ps1
 ### 方式 B：手动
 
 ```powershell
-$dst = "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-room"
+$dst = "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@sktian114\dsh-room"
+New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
 Copy-Item -Recurse -Force ".\dsh-room" $dst
 ```
 
@@ -149,7 +170,7 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 ```yaml
 - insert:
     - id: dsh-room
-      name: dsh-room
+      name: "@sktian114/dsh-room"
 ```
 
 重启 DSH。
@@ -178,7 +199,14 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 3. 点「创建房间」。
 4. 面板会列出本机地址，优先显示蒲公英的 `172.16.x.x`。点一下即可复制；
    点「复制邀请」会连房间名、地址、口令一起复制成一段可以直接发给朋友的话。
-5. 把地址发给朋友。
+5. **开放工作区**：在「共享权限」里给每个工作区选档位（默认全部封锁）：
+   `封锁` / `只读` / `仅工作区可写` / `完全权限`；也可以「添加文件夹」单独放行某个子目录。
+   没开放的工作区，房客连名字都看不到。
+6. 把地址发给朋友。
+
+> 档位随时能改，房客刷新页面即生效。只读档位下房客能看工作区和对话、能进工作台，
+> 但发消息 / 新建会话 / 跑命令 / 开终端都会被拒。房客新建的会话按档位自动钉住权限预设；
+> 房主已有的会话仍用它自己创建时的预设，所以打开高权限工作区前请三思。
 
 ### 房客
 
@@ -186,9 +214,12 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 
 1. 在浏览器里打开房主给的地址，例如 `http://172.16.1.130:8787/`。
 2. 代理会自动完成登录握手。手机上会自动以访客身份加入房间，并摊开「联机」面板：
-   房间名、成员、房主工作区目录都在这一屏。
-3. 关掉面板就是房主的工作台（DSH 网页版），可以正常对话、看文件。
+   房间名、成员、房主开放的工作区都在这一屏。
+3. 关掉面板就是房主的工作台（DSH 网页版）。房主开放了哪些工作区，就能看到哪些
+   工作区和工作区下面的对话；点进对话可以查看历史。
+   只读档位下输入框仍显示，但发送会失败（房主会看到 403），这是刻意为之。
    输入框右侧「联机」随时能再打开面板。
+
 
 **电脑上装了插件**
 
@@ -220,22 +251,47 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
   DSH 用 303 + `Set-Cookie` 完成登录，之后靠 cookie。
 - 房间 API 由宿主插件的 `/room/api/*` 路由提供，CORS 只放行必要的头。
 - `/room/api/host/*` 是房主专用接口，代理会拒绝来自非 loopback 的请求。
+- **房客的流量还要过一层守卫**（`lib/guard.mjs`）：
+  - WebSocket：`workspace/follow`、`session/control`、`session/follow`、`$events`
+    等下行帧按"开放工作区 + 会话归属"过滤，封锁工作区的名字/路径/对话直接丢掉；
+    终端、后台任务、工作流的流直接拒绝 `open`。
+  - HTTP：`session/list` 响应按 `cwd` 过滤；写操作端点（`session/prompt` 等）
+    按"目标会话 → 工作区档位"判定，只读 403、未知目标默认拒绝；
+    `settings/update`、`/permission`、审批回答、宿主桌面操作一律 403。
+  - 房主（loopback 直连）不过守卫，行为和没装插件时一致。
 
 ---
 
 ## 安全边界（请务必读）
 
-- **房间成员 = 你本人权限的 shell。** DSH 没有多租户 / 角色 / 只读模式。
-  能进房间的人就能在房主机器上执行命令、读写文件。
-- 蒲公英网络本身就是第一道门。**不要把 8787 映射到公网**，也不要在不可信的
-  公共组网里开房。
-- 建议设置房间口令；口令只防误入，不防同网络内的恶意成员。
-- 房主随时可以「停止房间」，所有房客立即断开。
-- **停止房间不会撤销已经登录过的房客。** 房客首次打开工作台时拿到的是 DSH 的
-  会话 Cookie（按主机名保存，不区分端口），所以停房后他们刷新仍可能进来。
+新版加了**代理层强制的工作区权限**，但底层事实没变：DSH 0.2.x 没有多租户 / 角色，
+房间成员在 DSH 眼里仍然是 owner。所以请把下面两段分开看。
+
+### 插件帮你挡住的事
+
+- **工作区默认全部封锁**：房客看不到被封锁工作区的名称、路径和里面的对话，
+  只能看到房主在「共享权限」里逐个开放的那些。
+- 每个开放的工作区有四档：
+  `封锁` / `只读` / `仅工作区可写` / `完全权限`，还可以单独加白某个文件夹。
+- **只读是真只读**：房客能看工作区、看对话、进工作台，但发消息、新建会话、
+  取消/改名/分叉、跑斜杠命令、开终端全部被代理 403。
+- **审批权在房主**：工具审批、「向用户提问」只回房主；房客回答审批的入口被拒。
+  房客也不能自己切权限预设或改全局设置。
+- 房客新建的会话会按工作区档位钉住权限预设（只读 / 仅工作区可写 / 完全权限）。
+
+### 仍然存在的风险
+
+- **能进房间的人仍可能绕过代理**：上面的限制都发生在房间端口这一层。
+  如果你把 DSH 的 Web 端口直接暴露，或房客能直连你本机的 DSH 端口，
+  这些限制就不生效。不要把 8787 或 DSH 端口映射到公网。
+- 蒲公英 / ZeroTier 网络本身就是第一道门，**不要在不可信的公共组网里开房**。
+- 房间口令只防误入，不防同网络内的恶意成员。
+- **停止房间不会撤销已经登录过的房客**：房客首次打开工作台时拿到的是 DSH 的
+  会话 Cookie（按主机名保存，不区分端口），停房后刷新仍可能进来。
   要真正断干净：停止房间 + 完全重启 DSH（进程令牌轮换），或把对方移出组网。
-- 「踢出」只会删掉房间面板里的成员记录，不能撤销上面的 Cookie；不要把它当权限系统。
-- 工具审批弹窗出现在房主（以及共享同一界面的房客）的界面上，看到弹窗请确认来源。
+- 「踢出」只删房间面板里的成员记录，不能撤销 Cookie；不要把它当权限系统。
+
+更完整的安全说明见 [SECURITY.md](SECURITY.md)。
 
 ---
 
@@ -264,7 +320,8 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 ## 卸载
 
 1. 房主面板「停止房间」。
-2. 删除 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-room`。
+2. 删除 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\@sktian114\dsh-room`
+   （旧版是 `node_modules\dsh-room`，两个都删掉更干净）。
 3. 从 `cordis.patch.yml` 删掉 `dsh-room` 的 `insert` 块。
 4. 重启 DSH。
 
@@ -272,13 +329,18 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\dsh-room\install.ps1 -Uninstall
+# 或
+node dsh-room/install.mjs --uninstall
 ```
 
 ---
 
 ## 已知限制
 
-- 房客的「工作区」是**只读目录列表**，不是文件内容预览；真正的读写要在房主工作台里做。
+- 房客能看到开放工作区下的**对话列表与对话内容**，但"新建/切换工作区"这类操作
+  受档位限制；只读档位下只能看。
+- DSH 0.2.x 没有多租户：房客在 DSH 里仍是 owner，插件只在**房间端口**这一层强制权限；
+  直连 DSH Web 端口不受保护。
 - 多人共享同一个 DSH 进程：会话列表、消息流是共享的，没有独立座位。
 - 不支持公网穿透自带域名；它设计给“已经组好网”的场景（蒲公英 / ZeroTier / Tailscale）。
 - 依赖 DSH 的 `ctx.webServer` 与 `ctx.connection`；未来 DSH 大版本若改接口，需要跟着改。
@@ -305,27 +367,41 @@ powershell -ExecutionPolicy Bypass -File .\dsh-room\install.ps1 -Uninstall
 
 ```
 dsh-room/
-├── index.mjs              宿主：房间 API + 反代 + WebSocket 透传
+├── index.mjs              宿主：房间 API + 反代 + WebSocket 透传 + 房客守卫接线
+├── lib/guard.mjs          房客守卫：工作区档位、帧/HTTP 过滤、写操作闸门
+├── lib/frames.mjs         WebSocket 帧编解码（就地改写 text 帧后重新掩码）
 ├── lib/client.js          浏览器：ModuleLoader bundle（React.createElement 手写）
 ├── cordis.patch.yml       挂载项
-├── install.ps1            安装 / 卸载脚本
+├── install.ps1            安装 / 卸载脚本（Windows）
+├── install.mjs            安装 / 卸载脚本（跨平台 Node）
+├── docs/protocol-notes.md DSH 协议 / 泄漏点 / 审批与预设的调研笔记
 ├── preview/               真实页面截图 + 渲染预览
+├── test/guard.test.mjs    守卫单测：工作区过滤、投影过滤、审批丢弃、写操作判定、帧编解码
 ├── test/host.test.mjs     离线冒烟：假 DSH 上游 + 反代 + 加入/列表/WS + 握手频控页
 ├── test/client.test.mjs   离线冒烟：bundle 注册 + 各视图渲染 + 复制/预填逻辑
 ├── test/render-preview.mjs 用真实 bundle 生成 preview/rendered.html
 ├── test/live-ui.mjs       真浏览器验收（CDP：按钮/面板/tab/深色/toast）
 ├── test/mobile-ui.mjs     手机验收（CDP 移动仿真：视口/Cookie/触屏/剪贴板/dvh）
+├── test/probe-*.mjs       诊断脚本（CDP 抓包 / 房客侧 API 与只读实测）
+├── CHANGELOG.md
+├── SECURITY.md
 └── README.md
 ```
 
-改 `lib/client.js` 后刷新页面即可；改 `index.mjs` 需要重载插件或重启 DSH。
+改 `lib/client.js` 后刷新页面即可；改 `index.mjs` / `lib/guard.mjs` 需要重载插件或重启 DSH。
 
 离线自测（不需要 DSH，也不需要浏览器）：
 
 ```powershell
-node test/host.test.mjs
-node test/client.test.mjs
-node test/render-preview.mjs
+npm test                       # guard + host + client 三套
+node test/guard.test.mjs       # 只跑守卫单测
+node test/render-preview.mjs   # 重新生成 preview/rendered.html
+```
+
+房客侧只读实测（先开房间，并把要测的工作区设成只读）：
+
+```powershell
+node test/probe-readonly.mjs http://192.168.1.5:8787/ "E:\path\to\workspace"
 ```
 
 手机验收（需要先开一个房间）：
@@ -344,3 +420,10 @@ node test/mobile-ui.mjs http://172.16.1.130:8787/ preview/mobile
 chrome --headless=new --remote-debugging-port=9334 --user-data-dir=$env:TEMP\dsh-ui about:blank
 node test/live-ui.mjs 9334 http://127.0.0.1:8787/ preview 房间口令
 ```
+
+---
+
+## 许可证
+
+[MIT](LICENSE) © 2026 sktian114
+

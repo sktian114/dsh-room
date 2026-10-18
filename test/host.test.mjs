@@ -12,6 +12,13 @@
  */
 import { createServer, request as httpRequest, get as httpGet } from 'node:http'
 import { strict as assert } from 'node:assert'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as joinPath } from 'node:path'
+
+// 策略会落盘到 $DSH_HOME/dsh-room-policy.json：测试必须用临时目录，别碰真实配置。
+process.env.DSH_HOME = mkdtempSync(joinPath(tmpdir(), 'dsh-room-test-'))
+
 import { apply } from '../index.mjs'
 
 process.on('uncaughtException', (error) => { console.error('UNCAUGHT', error); process.exit(1) })
@@ -119,6 +126,14 @@ assert.equal(started.status, 200, 'start status ' + started.status)
 assert.equal(started.json.ok, true)
 assert.equal(started.json.room.port, ROOM_PORT)
 
+// 0. 默认策略：工作区全部封锁，房主端能看到策略，房客端连目录名都看不到
+console.log('step: policy-default')
+const state0 = await httpGetJson(base + '/room/api/host/state')
+assert.equal(state0.body.policy.defaultMode, 'blocked')
+assert.equal(state0.body.roomWorkspaceMode, 'blocked')
+assert.equal(state0.body.workspace.available, false, '封锁时不给工作区内容')
+assert.equal(state0.body.policy.entries.length, 0)
+
 // 1. 首页导航：补 token → 303 → Location 改回房间地址
 console.log('step: home')
 const home = await fetch(roomBase + '/', { redirect: 'manual', headers: { accept: 'text/html' } })
@@ -213,6 +228,13 @@ assert.equal(join.json.ok, true)
 assert.ok(join.json.token)
 assert.equal(join.json.room.name, '测试房')
 assert.equal(join.json.members.length >= 1, true)
+// 4.0 默认封锁：房客响应里不能出现任何工作区目录名 / 路径
+assert.equal(join.json.room.workspace, '')
+assert.equal(join.json.room.workspaceMode, 'blocked')
+assert.equal(join.json.workspace.available, false)
+assert.equal(join.json.workspace.root, undefined)
+assert.equal(join.json.workspace.name, '')
+assert.deepEqual(join.json.workspaces, [])
 
 // 4.1 同一来源 IP 每分钟超过 8 次加入会被限流（房客来源由 x-forwarded-for 标识）
 function joinFrom(ip) {
@@ -243,6 +265,49 @@ let limited = null
 for (let i = 0; i < 9; i += 1) limited = await joinFrom('172.16.1.99')
 assert.equal(limited.status, 429, 'rate limit status')
 assert.equal(limited.json.error, 'too-many-attempts')
+
+// 4.2 房主单独开放房间工作区（只读）：房客能看到，但权限是 readonly
+console.log('step: policy-open-readonly')
+const opened = await post('/room/api/host/policy', {
+  defaultMode: 'blocked',
+  entries: [{ path: process.cwd(), mode: 'readonly' }],
+}, base)
+assert.equal(opened.status, 200)
+assert.equal(opened.json.policy.entries.length, 1)
+const stateOpened = await httpGetJson(base + '/room/api/host/state')
+assert.equal(stateOpened.body.roomWorkspaceMode, 'readonly')
+const guestOpened = await httpGetJson(roomBase + '/room/api/state?token=' + encodeURIComponent(join.json.token))
+assert.equal(guestOpened.body.workspace.available, true)
+assert.equal(guestOpened.body.workspace.mode, 'readonly')
+assert.equal(guestOpened.body.room.workspaceMode, 'readonly')
+assert.equal(typeof guestOpened.body.workspace.root, 'string')
+
+// 4.3 单独封锁工作区里的子文件夹：名字在文件树里消失，列目录被拒
+console.log('step: policy-block-folder')
+const folder = joinPath(process.cwd(), 'test')
+const blockedPolicy = await post('/room/api/host/policy', {
+  defaultMode: 'blocked',
+  entries: [
+    { path: process.cwd(), mode: 'readonly' },
+    { path: folder, mode: 'blocked' },
+  ],
+}, base)
+assert.equal(blockedPolicy.status, 200)
+const folderGuest = await httpGetJson(roomBase + '/room/api/state?token=' + encodeURIComponent(join.json.token))
+assert.equal(folderGuest.body.workspace.entries.some((entry) => entry.name === 'test'), false, '被封锁的子文件夹不能出现在文件树里')
+const deniedFolder = await fetch(roomBase + '/room/api/list?path=test&token=' + encodeURIComponent(join.json.token))
+const deniedFolderJson = await deniedFolder.json()
+assert.equal(deniedFolder.status, 403)
+assert.equal(deniedFolderJson.error, 'workspace-blocked')
+
+// 4.4 房主端文件夹选择器：能看到路径与解析后的权限
+console.log('step: policy-fs')
+const fsList = await httpGetJson(base + '/room/api/host/fs?path=' + encodeURIComponent(process.cwd()))
+assert.equal(fsList.status, 200)
+const testEntry = fsList.body.entries.find((entry) => entry.name === 'test')
+assert.ok(testEntry, 'fs 列表里应该有 test 目录')
+assert.equal(testEntry.mode, 'blocked')
+assert.equal(testEntry.path.endsWith('test'), true)
 
 // 5. 成员状态
 console.log('step: state')
