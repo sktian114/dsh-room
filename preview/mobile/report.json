@@ -1,0 +1,419 @@
+{
+  "roomUrl": "http://172.16.1.130:8787/",
+  "version": "Chrome/155.0.8059.80",
+  "baseline": {
+    "url": "http://172.16.1.130:8787/",
+    "origin": "http://172.16.1.130:8787",
+    "secure": false,
+    "clipboard": false,
+    "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    "dpr": 3,
+    "viewportMeta": "width=device-width, initial-scale=1",
+    "innerWidth": 390,
+    "innerHeight": 844,
+    "vvWidth": 390,
+    "vvHeight": 844,
+    "scrollWidth": 390,
+    "bodyScrollWidth": 390,
+    "title": "DeepSeek Harness",
+    "boot": true,
+    "dark": false,
+    "hoverNone": true,
+    "anyHover": false,
+    "cookieVisible": 0
+  },
+  "layout": {
+    "dpr": 3,
+    "launch": {
+      "x": 173,
+      "y": 490,
+      "w": 78,
+      "h": 32,
+      "visible": true
+    },
+    "launchVisible": true,
+    "composer": {
+      "x": 72,
+      "y": 423,
+      "w": 291,
+      "h": 52,
+      "visible": true
+    },
+    "inputFontSize": "14px",
+    "sidebar": [
+      {
+        "tag": "DIV",
+        "cls": "BynINW_sidebarCol",
+        "x": 0,
+        "y": 0,
+        "w": 56,
+        "h": 844,
+        "visible": true
+      },
+      {
+        "tag": "NAV",
+        "cls": "_2H3hWW_panelList",
+        "x": 10,
+        "y": 114,
+        "w": 35,
+        "h": 84,
+        "visible": true
+      }
+    ],
+    "fixed": [
+      {
+        "tag": "DIV",
+        "cls": "dsh-room-panel",
+        "x": 8,
+        "y": 256,
+        "w": 374,
+        "h": 580,
+        "visible": true
+      }
+    ],
+    "offscreen": [
+      {
+        "tag": "BUTTON",
+        "cls": "_addTab_6nhg2_449",
+        "text": "",
+        "x": 404,
+        "right": 432,
+        "plugin": false
+      },
+      {
+        "tag": "BUTTON",
+        "cls": "_iconButton_6nhg2_511",
+        "text": "",
+        "x": 674,
+        "right": 702,
+        "plugin": false
+      },
+      {
+        "tag": "BUTTON",
+        "cls": "OUqwTW_iconButton",
+        "text": "",
+        "x": 710,
+        "right": 738,
+        "plugin": false
+      },
+      {
+        "tag": "BUTTON",
+        "cls": "OUqwTW_iconButton",
+        "text": "",
+        "x": 746,
+        "right": 774,
+        "plugin": false
+      }
+    ],
+    "scrollHeight": 844,
+    "innerHeight": 844
+  },
+  "panel": {
+    "rect": {
+      "x": 8,
+      "y": 256,
+      "w": 374,
+      "h": 580,
+      "bottom": 836,
+      "right": 382
+    },
+    "maxHeight": "828px",
+    "bottomCss": "8px",
+    "rightCss": "8px",
+    "position": "fixed",
+    "inlineMaxh": "",
+    "scrollable": false,
+    "bodyScrollable": false,
+    "viewportHeight": 844,
+    "visualHeight": 844,
+    "overflowingBottom": false,
+    "overflowingTop": false,
+    "withinWidth": true,
+    "tabIndex": [
+      {
+        "text": "房主",
+        "h": 32,
+        "active": false
+      },
+      {
+        "text": "访客",
+        "h": 32,
+        "active": true
+      }
+    ],
+    "activeTab": "访客",
+    "kickDisplay": [],
+    "fontSize": "13px",
+    "closeSize": {
+      "w": 32,
+      "h": 32
+    },
+    "memberRows": [
+      "P PC-202209181648 房主",
+      "访 访客8356 刚刚",
+      "访 访客7133 刚刚"
+    ],
+    "hasError": false,
+    "errorText": null,
+    "bodyText": "已加入房间 已连接 · 延迟 24ms · http://172.16.1.130:8787 已连接 你已经在房间里了——当前这个页面就是房主的工作台，工作区是他的文件夹。 房间成员 3 P PC-202209181648 房主 访 访客8356 刚刚 访 访客7133 刚刚 房主工作区 复制地址 工作区是空的",
+    "launchSize": {
+      "w": 78,
+      "h": 32
+    },
+    "styleHasDvh": true,
+    "styleHasTouch": true,
+    "styleHasIosFont": true
+  },
+  "clip": {
+    "clipboardApi": false,
+    "secure": false,
+    "execCommand": true,
+    "execResult": false,
+    "selectionLength": 24
+  },
+  "first": {
+    "title": "DeepSeek Harness",
+    "hasRoomPage": false,
+    "launchInViewport": true,
+    "launchRect": {
+      "x": 173,
+      "y": 490,
+      "w": 78,
+      "h": 32
+    },
+    "links": [],
+    "footerHasRoomText": false
+  },
+  "results": [
+    {
+      "item": "环境/安全上下文",
+      "ok": true,
+      "detail": "isSecureContext=false（http://IP 应为 false）"
+    },
+    {
+      "item": "环境/视口 meta",
+      "ok": true,
+      "detail": "\"width=device-width, initial-scale=1\""
+    },
+    {
+      "item": "环境/横向溢出(390px)",
+      "ok": true,
+      "detail": "scrollWidth=390"
+    },
+    {
+      "item": "环境/DSH 加载",
+      "ok": true,
+      "detail": "__DSH_BOOT__=true title=DeepSeek Harness"
+    },
+    {
+      "item": "环境/触屏媒体查询",
+      "ok": true,
+      "detail": "hover:none=true"
+    },
+    {
+      "item": "环境/剪贴板 API 可用性",
+      "ok": true,
+      "detail": "navigator.clipboard=false（非 HTTPS 应为 false，必须有 execCommand 兜底）"
+    },
+    {
+      "item": "环境/Cookie 生效",
+      "ok": true,
+      "detail": "title=\"DeepSeek Harness\""
+    },
+    {
+      "item": "DSH 窄屏/联机入口可见",
+      "ok": true,
+      "detail": "{\"x\":173,\"y\":490,\"w\":78,\"h\":32,\"visible\":true}"
+    },
+    {
+      "item": "DSH 窄屏/联机按钮可点尺寸",
+      "ok": true,
+      "detail": "h=32 w=78（触屏建议 ≥44 高）"
+    },
+    {
+      "item": "DSH 窄屏/无横向溢出",
+      "ok": true,
+      "detail": "scrollWidth=390"
+    },
+    {
+      "item": "DSH 窄屏/插件控件不越界",
+      "ok": true,
+      "detail": "插件越界控件=0；DSH 自身越界控件=4 [{\"tag\":\"BUTTON\",\"cls\":\"_addTab_6nhg2_449\",\"text\":\"\",\"x\":404,\"right\":432,\"plugin\":false},{\"tag\":\"BUTTON\",\"cls\":\"_iconButton_6nhg2_511\",\"text\":\"\",\"x\":674,\"right\":702,\"plugin\":false},{\"tag\":\"BUTTON\",\"cls\":\"OUqwTW_iconButton\",\"text\":\"\",\"x\":710,\"right\":738,\"plugin\":false},{\"tag\":\"BUTTON\",\"cls\":\"OUqwTW_iconButton\",\"text\":\"\",\"x\":746,\"right\":774,\"plugin\":false}]"
+    },
+    {
+      "item": "DSH 窄屏/侧边栏",
+      "ok": true,
+      "detail": "[56,35]"
+    },
+    {
+      "item": "面板/已打开",
+      "ok": true,
+      "detail": "{\"x\":8,\"y\":256,\"w\":374,\"h\":580,\"bottom\":836,\"right\":382}"
+    },
+    {
+      "item": "面板/访客自动加入后默认落在访客页签",
+      "ok": true,
+      "detail": "activeTab=访客 tabs=[{\"text\":\"房主\",\"h\":32,\"active\":false},{\"text\":\"访客\",\"h\":32,\"active\":true}]"
+    },
+    {
+      "item": "面板/没有房主专属报错",
+      "ok": true,
+      "detail": "errorText=null"
+    },
+    {
+      "item": "面板/成员列表已包含自己",
+      "ok": true,
+      "detail": "[\"P PC-202209181648 房主\",\"访 访客8356 刚刚\",\"访 访客7133 刚刚\"]"
+    },
+    {
+      "item": "面板/同一台手机不会重复加入",
+      "ok": true,
+      "detail": "[\"P PC-202209181648 房主\",\"访 访客8356 刚刚\",\"访 访客7133 刚刚\"]"
+    },
+    {
+      "item": "面板/不超出视口底部",
+      "ok": true,
+      "detail": "bottom=836 innerHeight=844"
+    },
+    {
+      "item": "面板/不超出视口顶部",
+      "ok": true,
+      "detail": "top=256"
+    },
+    {
+      "item": "面板/不超出视口宽度",
+      "ok": true,
+      "detail": "left=8 right=382"
+    },
+    {
+      "item": "面板/高度用了 dvh",
+      "ok": true,
+      "detail": "stylesheet 含 100dvh=true max-height=828px"
+    },
+    {
+      "item": "面板/tab 触屏可点",
+      "ok": true,
+      "detail": "[{\"text\":\"房主\",\"h\":32,\"active\":false},{\"text\":\"访客\",\"h\":32,\"active\":true}]"
+    },
+    {
+      "item": "面板/关窗按钮触屏可点",
+      "ok": true,
+      "detail": "{\"w\":32,\"h\":32}"
+    },
+    {
+      "item": "面板/触屏样式存在",
+      "ok": true,
+      "detail": "hover:none 规则=true"
+    },
+    {
+      "item": "面板/手机输入字号 16px",
+      "ok": true,
+      "detail": "stylesheets 含 16px 规则=true"
+    },
+    {
+      "item": "剪贴板/失败时弹出长按复制面板",
+      "ok": true,
+      "detail": "{\"clicked\":true,\"fallbackShown\":true,\"fallbackText\":\"http://172.16.1.130:8787\",\"selectedLength\":24}"
+    },
+    {
+      "item": "面板/视口收缩后不越界",
+      "ok": true,
+      "detail": "{\"bottom\":742,\"h\":580,\"innerHeight\":750,\"maxHeight\":\"734px\"}"
+    },
+    {
+      "item": "剪贴板/非 HTTPS 有兜底路径",
+      "ok": true,
+      "detail": "{\"clipboardApi\":false,\"secure\":false,\"execCommand\":true,\"execResult\":false,\"selectionLength\":24}"
+    },
+    {
+      "item": "视口 375×667/无横向溢出",
+      "ok": true,
+      "detail": "scrollWidth=375"
+    },
+    {
+      "item": "视口 375×667/面板不越界",
+      "ok": true,
+      "detail": "{\"x\":8,\"y\":8,\"w\":359,\"h\":651,\"bottom\":659,\"innerHeight\":667,\"maxHeight\":\"651px\"}"
+    },
+    {
+      "item": "视口 430×932/无横向溢出",
+      "ok": true,
+      "detail": "scrollWidth=430"
+    },
+    {
+      "item": "视口 430×932/面板不越界",
+      "ok": true,
+      "detail": "{\"x\":8,\"y\":218,\"w\":414,\"h\":706,\"bottom\":924,\"innerHeight\":932,\"maxHeight\":\"916px\"}"
+    },
+    {
+      "item": "视口 844×390/无横向溢出",
+      "ok": true,
+      "detail": "scrollWidth=844"
+    },
+    {
+      "item": "视口 844×390/面板不越界",
+      "ok": true,
+      "detail": "{\"x\":196,\"y\":12,\"w\":384,\"h\":243,\"bottom\":255,\"innerHeight\":390,\"maxHeight\":\"243px\"}"
+    },
+    {
+      "item": "首屏/联机入口在视口内",
+      "ok": true,
+      "detail": "{\"x\":173,\"y\":490,\"w\":78,\"h\":32}"
+    },
+    {
+      "item": "首屏/无独立房间页",
+      "ok": true,
+      "detail": "hasRoomPage=false（当前实现直接进 DSH，没有房间落地页）"
+    },
+    {
+      "item": "访客/面板默认落在「访客」页签",
+      "ok": true,
+      "detail": "[{\"text\":\"房主\",\"active\":\"false\"},{\"text\":\"访客\",\"active\":\"true\"}]"
+    },
+    {
+      "item": "访客/不再显示房主专属报错",
+      "ok": true,
+      "detail": "hostError=null"
+    },
+    {
+      "item": "访客/已在本页工作台时不再劝跳转",
+      "ok": true,
+      "detail": "{\"saysAlreadyHere\":true,\"button\":false}"
+    },
+    {
+      "item": "访客/已加入后不再要求输入地址",
+      "ok": true,
+      "detail": "joinInput=null"
+    },
+    {
+      "item": "访客/联机按钮标题显示房间身份",
+      "ok": true,
+      "detail": "title=\"已在房间里：访客7133\""
+    },
+    {
+      "item": "重入/强制清理生效",
+      "ok": true,
+      "detail": "status=200 body={\"ok\":true}"
+    },
+    {
+      "item": "重入/失效令牌返回 401",
+      "ok": true,
+      "detail": "status=401 stale=false"
+    },
+    {
+      "item": "重入/回到前台自动重新入房",
+      "ok": true,
+      "detail": "status=200 tokenChanged=true"
+    },
+    {
+      "item": "重入/仍然用原昵称",
+      "ok": true,
+      "detail": "name=\"访客7133\""
+    },
+    {
+      "item": "重入/成员列表恢复（不再为 0）",
+      "ok": true,
+      "detail": "members=[\"PC-202209181648\",\"访客8356\",\"访客7133\"]"
+    }
+  ]
+}

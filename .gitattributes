@@ -1,0 +1,4 @@
+# 统一换行，避免 Windows 上反复出现 LF/CRLF 改动
+* text=auto eol=lf
+*.png binary
+*.ps1 text eol=crlf
