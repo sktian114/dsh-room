@@ -8,6 +8,7 @@
 > 于是 DSH 的 Host/Origin 栅栏永远看到 `127.0.0.1`，不需要改 DSH 任何配置。
 
 代码仓库：[sktian114/dsh-room](https://github.com/sktian114/dsh-room)（私有）
+发布状态：**私有开发版，未发布到 npm**（`private: true`），安装请走下面的本地复制脚本。
 
 ## 实测状态（Windows + DSH Desktop）
 
@@ -144,7 +145,11 @@ node dsh-room/install.mjs --uninstall
 - 清掉旧版留下的 `node_modules\dsh-room`，避免挂载两份
 - 打印重启提示
 
-**从 npm 装（发布后）**
+> **当前发布状态：私有阶段。** 仓库和包都还是私有的，**没有发布到 npm**；
+> `package.json` 里 `private: true`，误执行 `npm publish` 会被 npm 直接拒绝。
+> 下面这条"从 npm 装"的路径留给以后真正发版时启用。
+
+**从 npm 装（仅在发布后可用）**
 
 ```bash
 npm i -g @sktian114/dsh-room   # 或者放在任意目录用 npx
