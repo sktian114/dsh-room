@@ -56,7 +56,26 @@ assert.deepEqual(store.removeGroup(created.group.id), { ok: true })
 assert.equal(store.listGroups().length, 1)
 assert.equal(store.messagesOf(created.group.id), null)
 
-/* ── 7. 消息上限（不无限增长） ── */
+/* ── 7. 系统消息 + 「谁说过话」 ── */
+const people = createChatStore({ now: () => 5000 })
+people.ensureLobby()
+const notice = people.post({ from: { kind: 'system', id: 'room', name: '系统' }, text: '阿伟 加入了房间' })
+assert.equal(notice.message.from.kind, 'system')
+assert.equal(notice.message.from.name, '系统')
+// 系统提示不算「有人说话」
+assert.deepEqual(people.speakerList(), [])
+people.post({ from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '大家好' })
+people.post({ from: { kind: 'user', id: 'g2', name: '小鹿' }, text: '来了' })
+people.post({ from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '再说一句' })
+const speakers = people.speakerList()
+assert.deepEqual(speakers.map((item) => item.id), ['g1', 'g2'], 'speakers are listed by identity, most recent first')
+assert.equal(speakers[0].name, '阿伟')
+assert.equal(speakers[0].kind, 'user')
+// 同一个人换名字说话，身份 id 不变 → 仍然算同一个人
+people.post({ from: { kind: 'user', id: 'g1', name: '阿伟(手机)' }, text: '换个名字' })
+assert.equal(people.speakerList().filter((item) => item.id === 'g1').length, 1)
+
+/* ── 8. 消息上限（不无限增长） ── */
 const small = createChatStore({ maxMessages: 50 })
 small.ensureLobby()
 for (let i = 0; i < 80; i++) small.post({ from: { kind: 'host', id: 'host' }, text: 'm' + i })

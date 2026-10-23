@@ -385,4 +385,27 @@ assert.equal(
   'chat panel exposes its dragging state',
 )
 
+// 5. 消息里的「谁是谁」：系统提示单独一行、访客各自带身份标签和头像
+const whoMessages = [
+  { seq: 1, at: Date.now() - 60000, group: 'lobby', from: { kind: 'system', id: 'room', name: '系统' }, text: '阿伟 加入了房间' },
+  { seq: 2, at: Date.now() - 50000, group: 'lobby', from: { kind: 'host', id: 'host', name: '老王' }, text: '欢迎' },
+  { seq: 3, at: Date.now() - 40000, group: 'lobby', from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '谢谢' },
+  { seq: 4, at: Date.now() - 30000, group: 'lobby', from: { kind: 'user', id: 'g2', name: '阿伟' }, text: '我是另一个阿伟' },
+]
+const whoTree = view.ChatPanel({
+  base: '', token: '', isHost: true, roomOn: true,
+  initial: { groups: [{ id: 'lobby', name: '大厅', agents: [] }], messages: whoMessages, self: 'g1', active: 'lobby' },
+})
+const whoTexts = texts(whoTree)
+assert.ok(whoTexts.some((text) => text.includes('阿伟 加入了房间')), 'system notice should be rendered')
+assert.equal(findByClass(whoTree, 'dsh-room-sysmsg').length, 1, 'system notice gets its own row, not a bubble')
+const roles = findByClass(whoTree, 'dsh-room-msgrole').map((node) => node.props['data-kind'])
+assert.deepEqual([...roles].sort(), ['host', 'user', 'user'], 'each message carries a role tag')
+// 同名访客：色相按身份 id 取，所以两个「阿伟」不同色；自己的那条靠 id 认出来（右对齐）
+const avatars = findByClass(whoTree, 'dsh-room-msgavatar')
+assert.equal(avatars.length, 3, 'system notice has no avatar')
+assert.notEqual(avatars[1].props.style['--item-hue'], avatars[2].props.style['--item-hue'], 'same-name guests must not share a colour')
+const rows = findByClass(whoTree, 'dsh-room-msgrow')
+assert.deepEqual(rows.map((row) => row.props['data-self']), ['false', 'true', 'false'], 'only my own message is right-aligned')
+
 console.log('dsh-room client smoke test: PASS')

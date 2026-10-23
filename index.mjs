@@ -27,7 +27,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, hostname, homedir } from 'node:os'
 import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs'
 import { join, resolve, sep, basename } from 'node:path'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
 import { createGuestGuard } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
@@ -738,6 +738,7 @@ function setup(ctx, config) {
       if (now - member.lastSeen > MEMBER_TTL) {
         members.delete(id)
         if (member.token) tokens.delete(member.token)
+        if (room.active) systemSay((member.name || '访客') + ' 掉线离开了房间')
       }
     }
   }
@@ -827,6 +828,30 @@ function setup(ctx, config) {
     }
     if (isDirectHost(req)) return { kind: 'host', id: 'host', name: cfg.name || '房主' }
     return null
+  }
+
+  /* ── 房间身份 ──
+   * 访客 id 不再是「每次进房都换一个」的随机串：同一个人（同名 + 同一个来源 IP）
+   * 重连后还是同一个 id。这样聊天记录里的「谁说的」在断线重连后依然对得上，
+   * agent 也能靠 id 把人分清（同一个 id = 同一个人，不同 id = 不同的人）。
+   */
+  function guestIdentity(name, ip) {
+    const clean = cleanText(name, 24) || '访客'
+    const key = clean.toLowerCase() + '|' + String(ip || '')
+    const digest = createHash('sha256').update(key).digest('hex').slice(0, 8)
+    return { id: 'g' + digest, name: clean }
+  }
+
+  /** 往群里插一条系统提示（进房 / 离房 / 被拉进群）。系统消息不算「有人说话」。 */
+  function systemSay(text, groupId) {
+    const body = String(text || '').trim()
+    if (!body) return null
+    const result = chat.post({
+      groupId: groupId || 'lobby',
+      from: { kind: 'system', id: 'room', name: '系统' },
+      text: body,
+    })
+    return result && result.message ? result.message : null
   }
 
   function publicRoom() {
@@ -1332,20 +1357,25 @@ function setup(ctx, config) {
           sendJson(res, 403, { ok: false, error: 'bad-code' }, cors)
           return
         }
-        const name = cleanText(body.name, 24) || '访客'
-        const id = 'g' + randomBytes(3).toString('hex')
+        const identity = guestIdentity(body.name, ip)
+        const name = identity.name
+        const id = identity.id
         const token = randomBytes(24).toString('hex')
+        const previous = members.get(id)
         const member = {
           id,
           token,
           name,
           kind: 'guest',
           ip,
-          joinedAt: Date.now(),
+          joinedAt: previous ? previous.joinedAt : Date.now(),
           lastSeen: Date.now(),
         }
         members.set(id, member)
         tokens.set(token, id)
+        if (previous && previous.token && previous.token !== token) tokens.delete(previous.token)
+        // 只有「新面孔」才播报；同一个人断线重连（id 没变）不刷屏。
+        if (!previous) systemSay(name + ' 加入了房间')
         sendJson(res, 200, {
           ok: true,
           token,
@@ -1463,6 +1493,8 @@ function setup(ctx, config) {
           sendJson(res, 400, { ok: false, error: 'bad-agent' }, cors)
           return
         }
+        const before = chat.group(groupId)
+        const knownAgent = before && before.agents ? before.agents.get(agentId) : null
         const result = body.remove
           ? chat.removeAgent(groupId, agentId)
           : chat.addAgent(groupId, { id: agentId, title: cleanText(body.agentTitle || (body.agent && body.agent.title), 60) })
@@ -1470,6 +1502,12 @@ function setup(ctx, config) {
           sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
           return
         }
+        // 让群里的人和 agent 看见「谁被拉进来 / 移出去」，而不是成员悄悄变了
+        const groupName = (chat.group(groupId) && chat.group(groupId).name) || groupId
+        const label = (knownAgent && knownAgent.title)
+          || cleanText(body.agentTitle || (body.agent && body.agent.title), 60)
+          || agentId
+        systemSay('agent「' + label + '」' + (body.remove ? '被移出了「' : '被拉进了「') + groupName + '」', groupId)
         say('info', '[' + NAME + '] 群成员更新：' + groupId + ' ← ' + agentId)
         sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
         return
@@ -1539,6 +1577,7 @@ function setup(ctx, config) {
         if (member && member.kind === 'guest') {
           members.delete(member.id)
           if (member.token) tokens.delete(member.token)
+          systemSay((member.name || '访客') + ' 离开了房间')
         }
         sendJson(res, 200, { ok: true }, cors)
         return
@@ -1661,6 +1700,7 @@ function setup(ctx, config) {
         if (member && member.kind === 'guest') {
           members.delete(id)
           if (member.token) tokens.delete(member.token)
+          systemSay((member.name || '访客') + ' 被房主移出了房间')
         }
         sendJson(res, 200, { ok: true, members: memberList() }, cors)
         return
@@ -1750,10 +1790,17 @@ function setup(ctx, config) {
 
     const groupParam = { type: 'string', description: '群 id，例如 lobby（大厅）' }
 
+    // 身份口径写进工具描述里：agent 只有读到这段，才会把「不同 id」当成「不同的人」。
+    const whoNote = '房间里除了你，还有房主和若干访客；他们是不同的人，各有稳定的 id：'
+      + '同一个 id 就是同一个人（断线重连 id 不变），不同 id 就是不同的人。'
+      + '消息里的 fromId 就是说话人身份，system 是房间系统提示（有人进房/离房/被拉进群），不是人说的话。'
+      + '回复时请指名道姓（例如「@阿伟」），不要把一个访客说的话当成另一个访客说的话。'
+
     const tools = [
       {
         name: 'room_chat_list',
-        description: '列出房间里的聊天群。返回每个群的 id、名字、成员 agent、最后一条消息，以及你自己是否被拉进了这个群。想知道房间里的实时讨论时先调它。',
+        description: '列出房间里的聊天群。返回每个群的 id、名字、成员 agent、最后一条消息，以及你自己是否被拉进了这个群。'
+          + '想知道房间里的实时讨论时先调它。' + whoNote,
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         output: textOutput,
         async execute(_args, exec) {
@@ -1773,8 +1820,54 @@ function setup(ctx, config) {
         },
       },
       {
+        name: 'room_chat_members',
+        description: '看清「房间里都有谁」：房主、每个访客（各自身份 id、进房时间、是否还在线）、每个群里的 agent，'
+          + '以及谁最近说过话。' + whoNote,
+        parameters: {
+          type: 'object',
+          properties: {
+            group: { type: 'string', description: '可选，只看某个群的成员；不填则给出房间全景' },
+          },
+          additionalProperties: false,
+        },
+        output: textOutput,
+        async execute(args, exec) {
+          const groupId = args && args.group ? String(args.group) : ''
+          const people = memberList().map((member) => ({
+            id: member.id,
+            name: member.name,
+            role: member.kind,           // host | guest
+            online: Date.now() - member.lastSeen < 60_000,
+            joinedAt: member.joinedAt,
+            lastSeen: member.lastSeen,
+          }))
+          const spoken = chat.speakerList().map((item) => ({
+            id: item.id,
+            name: item.name,
+            role: item.kind,             // host | user | agent
+            lastAt: item.at,
+          }))
+          const groups = chat.listGroups()
+            .filter((group) => !groupId || group.id === groupId)
+            .map((group) => ({
+              id: group.id,
+              name: group.name,
+              agents: group.agents.map((item) => ({ id: item.id, title: item.title })),
+            }))
+          return {
+            ok: true,
+            note: whoNote,
+            me: agentInfo(exec).id,
+            people,
+            spokeRecently: spoken,
+            groups,
+          }
+        },
+      },
+      {
         name: 'room_chat_read',
-        description: '读取某个聊天群的消息（只读）。只能读你自己被拉进的群。since 是上次看到的序号，用来只看新消息。',
+        description: '读取某个聊天群的消息（只读）。只能读你自己被拉进的群。since 是上次看到的序号，用来只看新消息。'
+          + whoNote,
         parameters: {
           type: 'object',
           properties: {
@@ -1794,13 +1887,22 @@ function setup(ctx, config) {
           return {
             ok: true,
             group: groupId,
-            messages: messages.map((message) => ({ seq: message.seq, at: message.at, from: message.from.name, kind: message.from.kind, text: message.text })),
+            messages: messages.map((message) => ({
+              seq: message.seq,
+              at: message.at,
+              from: message.from.name,
+              fromId: message.from.id,
+              kind: message.from.kind,
+              mine: message.from.kind === 'agent' && message.from.id === agent.id,
+              text: message.text,
+            })),
           }
         },
       },
       {
         name: 'room_chat_post',
-        description: '往某个聊天群发一条消息（房间里的房主和访客都能立刻看到）。只能发到你自己被拉进的群。回答完、或做完一个阶段的工作后，用它同步进展。',
+        description: '往某个聊天群发一条消息（房间里的房主和访客都能立刻看到）。只能发到你自己被拉进的群。'
+          + '回答完、或做完一个阶段的工作后，用它同步进展。' + whoNote,
         parameters: {
           type: 'object',
           properties: {
@@ -1838,7 +1940,8 @@ function setup(ctx, config) {
         }
       }
       if (registered > 0) {
-        say('info', '[' + NAME + '] 已注册房间聊天工具（' + how + '，' + registered + '/' + tools.length + '）：room_chat_list / room_chat_read / room_chat_post')
+        say('info', '[' + NAME + '] 已注册房间聊天工具（' + how + '，' + registered + '/' + tools.length
+          + '）：room_chat_list / room_chat_members / room_chat_read / room_chat_post')
       }
       return registered > 0
     }

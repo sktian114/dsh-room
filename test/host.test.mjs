@@ -413,14 +413,21 @@ const guestToken = encodeURIComponent(join.json.token)
 const chatSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: 'lobby', text: '大家好' })
 assert.equal(chatSend.status, 200)
 assert.equal(chatSend.json.ok, true)
-assert.equal(chatSend.json.message.seq, 1)
+assert.equal(typeof chatSend.json.message.seq, 'number')
 assert.equal(chatSend.json.message.from.kind, 'user')
+// 说话人身份是稳定 id（同一个人重连还是同一个 id），不是每次进房新生成的随机串
+assert.equal(chatSend.json.message.from.id, join.json.self.id)
+const firstSendSeq = chatSend.json.message.seq
 
 const chatSync = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=0')
 assert.equal(chatSync.status, 200)
 assert.equal(chatSync.body.self.kind, 'user')
 assert.equal(chatSync.body.groups[0].id, 'lobby')
-assert.equal(chatSync.body.messages.length, 1)
+// 进房会播一条系统提示，所以第一条不是人说的话
+const joinNotice = chatSync.body.messages.find((message) => message.from.kind === 'system')
+assert.ok(joinNotice, 'joining the room should post a system notice')
+assert.ok(joinNotice.text.includes('阿伟'), 'system notice should name who joined')
+assert.ok(chatSync.body.messages.some((message) => message.text === '大家好'))
 
 const hostSync = await httpGetJson(base + '/room/api/chat/sync?since=0')
 assert.equal(hostSync.status, 200)
@@ -436,9 +443,15 @@ assert.equal(addAgent.status, 200)
 assert.equal(addAgent.json.group.agents[0].title, '重构助手')
 
 const groupSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '在吗' })
-assert.equal(groupSend.json.message.seq, 2)
-const incremental = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=1')
-assert.deepEqual(incremental.body.messages.map((m) => m.text), ['在吗'])
+assert.ok(groupSend.json.message.seq > firstSendSeq)
+const groupSendSeq = groupSend.json.message.seq
+const incremental = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=' + firstSendSeq)
+assert.ok(incremental.body.messages.some((m) => m.group === groupId && m.text === '在吗'))
+// 拉 agent 进群也要让群里看见（系统提示）
+assert.ok(
+  incremental.body.messages.some((m) => m.group === groupId && m.from.kind === 'system' && m.text.includes('重构助手')),
+  'adding an agent should leave a system notice in the group',
+)
 
 // 房客不能冒充房主建群（请求经过代理时带 x-forwarded-for）
 const hijack = await fetch(roomBase + '/room/api/host/chat/group', {
@@ -461,23 +474,37 @@ assert.equal(emptyText.json.error, 'empty')
 // 8.6 聊天工具注册：必须是 DSH 认的形状（output.schema + output.render），
 //     否则 register 抛错、DSH 直接 fatal load failure 起不来。
 console.log('step: chat tools')
-assert.deepEqual([...registeredTools.keys()].sort(), ['room_chat_list', 'room_chat_post', 'room_chat_read'])
+assert.deepEqual([...registeredTools.keys()].sort(), ['room_chat_list', 'room_chat_members', 'room_chat_post', 'room_chat_read'])
 const agentExec = { agent: { session: { id: 'session-test', title: '重构助手' } } }
 const outsiderExec = { agent: { session: { id: 'session-other', title: '局外人' } } }
 const listDef = registeredTools.get('room_chat_list')
+const membersDef = registeredTools.get('room_chat_members')
 const readDef = registeredTools.get('room_chat_read')
 const postDef = registeredTools.get('room_chat_post')
-for (const def of [listDef, readDef, postDef]) {
+for (const def of [listDef, membersDef, readDef, postDef]) {
   assert.equal(typeof def.output.render, 'function')
   assert.equal(def.output.schema.type, 'object')
   const parts = def.output.render({}, { ok: true })
   assert.equal(parts[0].type, 'text')
   assert.equal(typeof parts[0].text, 'string')
+  // 身份口径必须写在描述里，否则 agent 还是不会把人分清
+  assert.ok(def.description.includes('同一个 id'), def.name + ' description should explain identity')
 }
 
 const listed = await listDef.execute({}, agentExec)
 assert.equal(listed.ok, true)
 assert.ok(listed.groups.some((group) => group.id === groupId && group.joined), 'agent should be listed as joined')
+
+// 「谁是谁」：房主 + 访客各自的身份 id、在线状态、最近谁说过话
+const roster = await membersDef.execute({}, agentExec)
+assert.equal(roster.ok, true)
+assert.ok(roster.people.some((person) => person.role === 'host'), 'roster should include the host')
+const guestRow = roster.people.find((person) => person.role === 'guest')
+assert.ok(guestRow, 'roster should include the guest')
+assert.equal(guestRow.id, join.json.self.id)
+assert.equal(guestRow.name, '阿伟')
+assert.ok(roster.spokeRecently.some((item) => item.id === join.json.self.id), 'roster should know who spoke')
+assert.ok(roster.groups.some((group) => group.agents.some((agent) => agent.id === 'session-test')))
 
 // 没被拉进来的 agent 读不到、也发不了
 const deniedRead = await readDef.execute({ group: groupId }, outsiderExec)
@@ -487,11 +514,21 @@ assert.equal(deniedPost.error, 'not-member')
 
 // 被拉进来的 agent 能读能发，房客那边会看到
 const read1 = await readDef.execute({ group: groupId, since: 0 }, agentExec)
-assert.deepEqual(read1.messages.map((message) => message.text), ['在吗'])
+assert.ok(read1.messages.some((message) => message.text === '在吗'))
+assert.ok(read1.messages.every((message) => typeof message.fromId === 'string'))
 const agentPost = await postDef.execute({ group: groupId, text: '工具发言' }, agentExec)
 assert.equal(agentPost.ok, true)
-const afterAgent = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=2')
-assert.deepEqual(afterAgent.body.messages.map((message) => message.from.kind), ['agent'])
+const afterAgent = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=' + groupSendSeq)
+assert.ok(afterAgent.body.messages.some((message) => message.from.kind === 'agent' && message.text === '工具发言'))
+const mineRead = await readDef.execute({ group: groupId, since: 0 }, agentExec)
+assert.equal(mineRead.messages.filter((message) => message.mine).length, 1, 'agent should recognise its own message')
+
+// 同一个名字 + 同一个来源 IP 重连 → 身份 id 不变（聊天记录里的「谁说的」不会断）
+// 注意：重连会换发新令牌、旧令牌作废，所以这条放在所有「用旧令牌」的断言之后。
+const rejoin = await httpPostJson(roomBase + '/room/api/join', { name: '阿伟' })
+assert.equal(rejoin.status, 200)
+assert.equal(rejoin.json.self.id, join.json.self.id)
+assert.equal(rejoin.json.members.filter((member) => member.kind === 'guest' && member.name === '阿伟').length, 1, 'rejoin must not create a second guest')
 
 // 8.7 agent 选择器接口：房主直连能拿到列表（上游假服务不给 session/list 时就是空数组，
 //     但不能 500），房客经代理打进来必须被 403 拦掉。

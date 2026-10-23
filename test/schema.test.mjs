@@ -63,13 +63,24 @@ const ctx = {
 
 plugin.apply(ctx, { port: 8788, name: 'schema-check', workspace: process.cwd() })
 
-assert.deepEqual([...registered.keys()].sort(), ['room_chat_list', 'room_chat_post', 'room_chat_read'])
+assert.deepEqual([...registered.keys()].sort(), ['room_chat_list', 'room_chat_members', 'room_chat_post', 'room_chat_read'])
 
 const samples = {
   room_chat_list: [{}, { ok: true, self: 's1', groups: [{ id: 'lobby', name: '大厅', agents: [], joined: true }] }],
+  room_chat_members: [
+    { group: 'lobby' },
+    {
+      ok: true,
+      note: '同一个 id 就是同一个人',
+      me: 's1',
+      people: [{ id: 'host', name: '房主', role: 'host', online: true, joinedAt: 1, lastSeen: 2 }],
+      spokeRecently: [{ id: 'g1', name: '阿伟', role: 'user', lastAt: 3 }],
+      groups: [{ id: 'lobby', name: '大厅', agents: [{ id: 's1', title: '重构助手' }] }],
+    },
+  ],
   room_chat_read: [
     { group: 'lobby', since: 0, limit: 50 },
-    { ok: true, group: 'lobby', messages: [{ seq: 1, at: '2026-10-23T00:00:00.000Z', from: '阿伟', kind: 'user', text: 'hi' }] },
+    { ok: true, group: 'lobby', messages: [{ seq: 1, at: '2026-10-23T00:00:00.000Z', from: '阿伟', fromId: 'g1', kind: 'user', mine: false, text: 'hi' }] },
   ],
   room_chat_post: [{ group: 'lobby', text: 'hi' }, { ok: true, group: 'lobby', seq: 1 }],
 }
