@@ -31,6 +31,7 @@ import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
 import { createGuestGuard } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
+import { denyBody } from './lib/deny.mjs'
 
 const NAME = 'dsh-room'
 // 版本号以 package.json 为唯一来源，避免发版时两处不一致。
@@ -473,6 +474,11 @@ function setup(ctx, config) {
   // 在 session/created 时钉死（只读 / 仅工作区可写 / 完全权限）。
   const guestSessions = new Map()
   const sharedSessionModes = new Map()
+
+  /* ── 拒绝理由 → 房客看得懂的话 ──
+   * 文案与 code 在 lib/deny.mjs（纯数据、可单测）；客户端 lib/client.js 按 code 弹提示。
+   */
+
 
   /* ───────────────────────── 工作区共享策略 ─────────────────────────
    * 默认全部封锁：房客连工作区名字都看不到，房主在面板里逐个「开放」并选权限。
@@ -1004,7 +1010,7 @@ function setup(ctx, config) {
       const verdict = requestUrl ? guest.judgeRequest(pathname, req.method, requestUrl) : null
       if (verdict === 'approval-owner-only' || verdict === 'workspace-blocked') {
         res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ ok: false, error: verdict }))
+        res.end(JSON.stringify(denyBody(verdict)))
         return
       }
     }
@@ -1195,7 +1201,7 @@ function setup(ctx, config) {
           aborted = true
           if (!res.headersSent && !res.writableEnded) {
             res.writeHead(413, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-            res.end(JSON.stringify({ ok: false, error: 'payload-too-large' }))
+            res.end(JSON.stringify(denyBody('payload-too-large')))
           } else { try { res.destroy() } catch { /* 忽略 */ } }
           try { upstream.destroy() } catch { /* 忽略 */ }
           req.resume()
@@ -1208,7 +1214,7 @@ function setup(ctx, config) {
         const text = Buffer.concat(chunks).toString('utf8')
         const verdict = guest.judgeBody(pathname, text)
         if (verdict && verdict.deny) {
-          sendJson(res, 403, { ok: false, error: verdict.deny })
+          sendJson(res, 403, denyBody(verdict.deny))
           return
         }
         if (verdict && verdict.create) pendingCreate = verdict.create
@@ -1453,7 +1459,7 @@ function setup(ctx, config) {
 
       if (path === PREFIX + '/api/host/chat/group' && req.method === 'POST') {
         if (!isDirectHost(req)) {
-          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          sendJson(res, 403, denyBody('host-only'), cors)
           return
         }
         const body = (await readJson(req)) || {}
@@ -1469,7 +1475,7 @@ function setup(ctx, config) {
 
       if (path === PREFIX + '/api/host/chat/group' && req.method === 'DELETE') {
         if (!isDirectHost(req)) {
-          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          sendJson(res, 403, denyBody('host-only'), cors)
           return
         }
         const result = chat.removeGroup(cleanText(url.searchParams.get('group'), 64))
@@ -1483,7 +1489,7 @@ function setup(ctx, config) {
 
       if (path === PREFIX + '/api/host/chat/member' && req.method === 'POST') {
         if (!isDirectHost(req)) {
-          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          sendJson(res, 403, denyBody('host-only'), cors)
           return
         }
         const body = (await readJson(req)) || {}
@@ -1515,7 +1521,7 @@ function setup(ctx, config) {
 
       if (path === PREFIX + '/api/host/agents' && req.method === 'GET') {
         if (!isDirectHost(req)) {
-          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          sendJson(res, 403, denyBody('host-only'), cors)
           return
         }
         // 房主页自己 POST /api/session/list 会撞上 DSH 的令牌栅栏（旁观者视角未必带得上 cookie），
@@ -1538,7 +1544,7 @@ function setup(ctx, config) {
         const rel = String(url.searchParams.get('path') || '').replace(/\\/g, '/').replace(/^\/+/, '')
         // 目录级策略：未开放（或被封锁的子文件夹）连列目录都不允许，避免路径泄漏。
         if (isBlockedPath(join(room.workspace, rel))) {
-          sendJson(res, 403, { ok: false, error: 'workspace-blocked' }, cors)
+          sendJson(res, 403, denyBody('workspace-blocked'), cors)
           return
         }
         try {

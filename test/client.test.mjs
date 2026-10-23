@@ -9,6 +9,7 @@
  *   · 按钮与面板的初始渲染不抛异常
  */
 import { strict as assert } from 'node:assert'
+import { DENY_REASONS } from '../lib/deny.mjs'
 
 const styles = new Map()
 globalThis.document = {
@@ -390,7 +391,8 @@ const whoMessages = [
   { seq: 1, at: Date.now() - 60000, group: 'lobby', from: { kind: 'system', id: 'room', name: '系统' }, text: '阿伟 加入了房间' },
   { seq: 2, at: Date.now() - 50000, group: 'lobby', from: { kind: 'host', id: 'host', name: '老王' }, text: '欢迎' },
   { seq: 3, at: Date.now() - 40000, group: 'lobby', from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '谢谢' },
-  { seq: 4, at: Date.now() - 30000, group: 'lobby', from: { kind: 'user', id: 'g2', name: '阿伟' }, text: '我是另一个阿伟' },
+  { seq: 4, at: Date.now() - 30000, group: 'lobby', from: { kind: 'user', id: 'g2', name: '访客6105' }, text: '我也在' },
+  { seq: 5, at: Date.now() - 20000, group: 'lobby', from: { kind: 'user', id: 'g3', name: '访客8842' }, text: '我也是访客' },
 ]
 const whoTree = view.ChatPanel({
   base: '', token: '', isHost: true, roomOn: true,
@@ -400,12 +402,65 @@ const whoTexts = texts(whoTree)
 assert.ok(whoTexts.some((text) => text.includes('阿伟 加入了房间')), 'system notice should be rendered')
 assert.equal(findByClass(whoTree, 'dsh-room-sysmsg').length, 1, 'system notice gets its own row, not a bubble')
 const roles = findByClass(whoTree, 'dsh-room-msgrole').map((node) => node.props['data-kind'])
-assert.deepEqual([...roles].sort(), ['host', 'user', 'user'], 'each message carries a role tag')
-// 同名访客：色相按身份 id 取，所以两个「阿伟」不同色；自己的那条靠 id 认出来（右对齐）
-const avatars = findByClass(whoTree, 'dsh-room-msgavatar')
-assert.equal(avatars.length, 3, 'system notice has no avatar')
-assert.notEqual(avatars[1].props.style['--item-hue'], avatars[2].props.style['--item-hue'], 'same-name guests must not share a colour')
+assert.deepEqual([...roles].sort(), ['host', 'user', 'user', 'user'], 'each message carries a role tag')
+// 昵称要显示出来（不是只靠头像），且带上身份 id 便于排查
 const rows = findByClass(whoTree, 'dsh-room-msgrow')
-assert.deepEqual(rows.map((row) => row.props['data-self']), ['false', 'true', 'false'], 'only my own message is right-aligned')
+assert.deepEqual(rows.map((row) => row.props['data-identity']), ['host', 'g1', 'g2', 'g3'])
+assert.deepEqual(
+  findByClass(whoTree, 'dsh-room-msgname').map((node) => node.children[0]),
+  ['老王', '阿伟', '访客6105', '访客8842'],
+  'each message shows the sender nickname',
+)
+// 头像：同名不同 id 不同色；默认名「访客6105」取尾号，避免所有人头像一样
+const avatars = findByClass(whoTree, 'dsh-room-msgavatar')
+assert.equal(avatars.length, 4, 'system notice has no avatar')
+assert.notEqual(avatars[1].props.style['--item-hue'], avatars[2].props.style['--item-hue'], 'same-name guests must not share a colour')
+assert.deepEqual(avatars.map((node) => node.children[0]), ['老王', '阿伟', '05', '42'])
+assert.equal(avatars[2].props.title.includes('g2'), true, 'avatar tooltip carries the identity id')
+assert.deepEqual(rows.map((row) => row.props['data-self']), ['false', 'true', 'false', 'false'], 'only my own message is right-aligned')
+assert.equal(moduleExports.__test.initialsOf('访客6105'), '05')
+assert.equal(moduleExports.__test.initialsOf('阿伟'), '阿伟')
+assert.equal(moduleExports.__test.initialsOf('Ada Lovelace'), 'AL')
+
+// 6. 房客撞墙提示：403 + room/* 的响应要能翻译成人话，且钩子不改变原响应
+const denyTitles = moduleExports.__test.DENY_TITLES
+assert.ok(denyTitles['room/readonly'].includes('没有发送权限'), 'readonly 有明确标题')
+// 服务端每个拒绝 code 都要有对应标题，不能漏
+for (const entry of Object.values(DENY_REASONS)) {
+  assert.ok(denyTitles[entry.code], '客户端缺少 ' + entry.code + ' 的提示标题')
+}
+// 旧版宿主只有 error 枚举时也要能翻成人话
+const legacyNotice = moduleExports.__test.denyNoticeFor({ ok: false, error: 'workspace-readonly' })
+assert.equal(legacyNotice.code, 'room/readonly')
+assert.ok(legacyNotice.title.includes('没有发送权限'))
+assert.ok(legacyNotice.text.includes('只读权限'))
+assert.equal(moduleExports.__test.denyNoticeFor({ ok: false, error: 'bad-code' }), null, '普通业务错误不弹权限提示')
+assert.equal(moduleExports.__test.denyNoticeFor({ ok: true }), null)
+globalThis.window.fetch = function () {
+  return Promise.resolve({
+    status: 403,
+    clone() {
+      return {
+        text: () => Promise.resolve(JSON.stringify({
+          ok: false,
+          error: 'workspace-readonly',
+          code: 'room/readonly',
+          message: '当前是只读权限（房主设置），不能向 Agent 发送指令。',
+        })),
+      }
+    },
+  })
+}
+let calls = 0
+const stubbed = globalThis.window.fetch
+globalThis.window.fetch = function () { calls += 1; return stubbed.apply(this, arguments) }
+assert.equal(moduleExports.__test.installDenyNotice(), true)
+assert.equal(globalThis.window.__dshRoomDenyHook, true)
+assert.equal(moduleExports.__test.installDenyNotice(), true)
+const denied = await globalThis.window.fetch('/api/session/prompt', { method: 'POST' })
+assert.equal(calls, 1)
+assert.equal(denied.status, 403, 'hook is transparent: caller still sees the 403')
+await new Promise((resolve) => setTimeout(resolve, 10))
+assert.equal(calls, 1, 'installing twice must not double-wrap fetch')
 
 console.log('dsh-room client smoke test: PASS')

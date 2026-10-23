@@ -5,6 +5,7 @@
 import { strict as assert } from 'node:assert'
 import { createGuestGuard } from '../lib/guard.mjs'
 import { createFrameTransformer } from '../lib/frames.mjs'
+import { DENY_REASONS, denyBody } from '../lib/deny.mjs'
 
 const blockedRoot = 'C:\\secret'
 const allowedRoot = 'C:\\work'
@@ -209,5 +210,27 @@ const kept = serverTransformer.push(Buffer.concat([
   unmaskedFrame(JSON.stringify({ type: 'item', streamId: '2', drop: true, value: {} })),
 ]))
 assert.equal(parseFrames(kept).length, 1)
+
+/* ── 拒绝说明：房客撞墙时要看到人话，不是一句默认报错 ── */
+const readonlyBody = denyBody('workspace-readonly')
+assert.equal(readonlyBody.ok, false)
+assert.equal(readonlyBody.error, 'workspace-readonly')
+assert.equal(readonlyBody.code, 'room/readonly')
+assert.ok(readonlyBody.message.includes('只读'))
+assert.ok(readonlyBody.message.includes('不能向 Agent 发送指令'), '只读房客要知道自己没发送权限')
+assert.equal(denyBody('workspace-blocked').code, 'room/blocked')
+assert.equal(denyBody('host-only').code, 'room/host-only')
+assert.equal(denyBody('permission-locked').code, 'room/permission-locked')
+assert.equal(denyBody('approval-owner-only').code, 'room/approval-owner-only')
+assert.equal(denyBody('payload-too-large').code, 'room/payload-too-large')
+// 未登记的理由也要有个能读的兜底，而不是空字符串
+const unknown = denyBody('something-new')
+assert.equal(unknown.code, 'room/something-new')
+assert.ok(unknown.message.includes('something-new'))
+// 每条文案都要说清「为什么」和「怎么办」
+for (const [reason, entry] of Object.entries(DENY_REASONS)) {
+  assert.ok(entry.code.startsWith('room/'), reason + ' 的 code 要带 room/ 前缀')
+  assert.ok(entry.message.length >= 12, reason + ' 的说明太短，房客看不懂')
+}
 
 console.log('dsh-room guard test: PASS')
