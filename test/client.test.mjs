@@ -256,4 +256,133 @@ assert.equal(joinInputs[0].props.value, 'http://172.16.1.130:8787', 'join input 
 assert.equal(joinInputs[0].props.inputMode, 'url', 'join input should use url keyboard')
 assert.equal(joinInputs[0].props.enterKeyHint, 'go')
 
+/* ── 自定义下拉 / 选择文件夹 / 拖动面板 ── */
+
+function findTag(node, tag, out) {
+  const bucket = out || []
+  if (!node || typeof node !== 'object') return bucket
+  if (Array.isArray(node)) { node.forEach((child) => findTag(child, tag, bucket)); return bucket }
+  if (typeof node.type === 'function') { findTag(node.type(node.props || {}), tag, bucket); return bucket }
+  if (node.type === tag) bucket.push(node)
+  if (node.children) findTag(node.children, tag, bucket)
+  return bucket
+}
+
+// 1. 单选下拉：显示当前项的文案，且不再产生原生 <select>
+const selectTree = view.Select({
+  value: 'write',
+  onChange() {},
+  options: [
+    { value: 'blocked', label: '未开放' },
+    { value: 'readonly', label: '只读' },
+    { value: 'write', label: '仅工作区可写' },
+    { value: 'full', label: '完全权限' },
+  ],
+})
+const selectTexts = texts(selectTree)
+assert.ok(selectTexts.includes('仅工作区可写'), 'select should show the current label')
+assert.equal(findTag(selectTree, 'select').length, 0, 'no native <select> inside the custom dropdown')
+assert.equal(findByClass(selectTree, 'dsh-room-sel-trigger').length, 1, 'select trigger rendered')
+assert.equal(findByClass(selectTree, 'dsh-room-sel-pop').length, 0, 'menu stays closed until opened')
+const trigger = findByClass(selectTree, 'dsh-room-sel-trigger')[0]
+assert.equal(trigger.props['aria-haspopup'], 'listbox')
+assert.equal(trigger.props['aria-expanded'], 'false')
+// 值不在选项里时（手工填过的路径）直接显示原值，不要显示成空
+const rawSelectTexts = texts(view.Select({ value: 'E:\\proj', options: [], onChange() {} }))
+assert.ok(rawSelectTexts.includes('E:\\proj'), 'select should fall back to the raw value')
+
+// 2. 房主表单：有原生选择框能力时用「选择文件夹…」，没有就退回手输路径
+const hostFormHost = {
+  running: false,
+  room: null,
+  urls: [],
+  members: [],
+  policy: { defaultMode: 'blocked', entries: [] },
+  workspaces: [{ id: 'w1', title: 'proj', path: 'E:\\proj', mode: 'readonly' }],
+  workspace: null,
+  defaultWorkspace: 'E:\\proj',
+}
+const hostWithPicker = view.HostView({
+  host: hostFormHost,
+  error: '',
+  pickFolder: () => Promise.resolve('D:\\data'),
+  onRefresh() {},
+  notify() {},
+})
+const pickerTexts = texts(hostWithPicker)
+assert.ok(pickerTexts.some((text) => text.includes('选择文件夹')), 'host form should offer the folder picker')
+assert.equal(findByClass(hostWithPicker, 'dsh-room-pickrow').length >= 1, true, 'picker row rendered')
+assert.equal(
+  pickerTexts.some((text) => text.includes('绝对路径')),
+  false,
+  'path typing placeholder should be gone when a picker is available',
+)
+const hostNoPicker = view.HostView({ host: hostFormHost, error: '', onRefresh() {}, notify() {} })
+assert.ok(
+  placeholders(hostNoPicker).some((text) => text.includes('绝对路径')),
+  'without a picker the manual path input must stay as fallback',
+)
+
+// 房间已开：共享权限里的「单独开放某个文件夹」也必须是选择框，而不是手输路径
+const hostRunningPicker = view.HostView({
+  host: {
+    running: true,
+    room: { name: '老王的开发间', port: 8787, needsCode: false, code: '', workspace: 'E:\\proj' },
+    urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '蒲公英' }],
+    members,
+    hostToken: 'abc',
+    policy: { defaultMode: 'blocked', entries: [] },
+    workspaces: [{ id: 'w1', title: 'proj', path: 'E:\\proj', mode: 'readonly' }],
+    workspace: { available: true, mode: 'readonly', root: 'E:\\proj', entries },
+  },
+  error: '',
+  pickFolder: () => Promise.resolve('D:\\data'),
+  onRefresh() {},
+  notify() {},
+})
+const runningPickerTexts = texts(hostRunningPicker)
+assert.ok(
+  runningPickerTexts.some((text) => text.includes('选择要单独开放的文件夹')),
+  'running host should offer the folder picker for extra folders',
+)
+assert.equal(findByClass(hostRunningPicker, 'dsh-room-pickpath').length >= 1, true, 'picked-folder box rendered')
+assert.equal(
+  placeholders(hostRunningPicker).some((text) => text.includes('绝对路径')),
+  false,
+  'running host must not ask for a typed folder path',
+)
+
+// 3. 选择目录能力：优先 Electron 原生桥，其次 DSH 工作区服务，都没有就返回 null
+globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => 'D:\\picked' }
+const bridgePicker = view.resolvePickFolder({})
+assert.equal(typeof bridgePicker, 'function', 'native bridge should be used when present')
+assert.equal(await bridgePicker(), 'D:\\picked')
+delete globalThis.__DSH_DIRECTORY_PICKER__
+assert.equal(view.resolvePickFolder({}), null, 'no bridge and no workspace service means no picker')
+const workspacePicker = view.resolvePickFolder({ uiWorkspace: { pickDirectory: async () => 'E:\\ws' } })
+assert.equal(await workspacePicker('选工作区'), 'E:\\ws', 'workspace service should be the fallback')
+
+// 4. 拖动：房间面板与聊天面板的头部都挂了指针事件
+const dragPanelTree = view.Panel({
+  guest: { addr: 'http://172.16.1.130:8787', token: 'token-1', name: '阿伟' },
+  guestState: { ok: true, room: { name: '老王的开发间' }, members, workspaces: [], workspace: null },
+  onClose() {},
+})
+const roomHeads = findByClass(dragPanelTree, 'dsh-room-head')
+assert.equal(roomHeads.length, 1, 'room panel header rendered once')
+assert.equal(typeof roomHeads[0].props.onPointerDown, 'function', 'room panel header must start a drag')
+assert.equal(typeof roomHeads[0].props.onPointerMove, 'function', 'room panel header must track the drag')
+assert.equal(typeof roomHeads[0].props.onPointerUp, 'function', 'room panel header must finish the drag')
+const dragChatTree = view.ChatPanel({ base: '', token: '', isHost: true, roomOn: true })
+for (const cls of ['dsh-room-chathead', 'dsh-room-chatlist-head']) {
+  const heads = findByClass(dragChatTree, cls)
+  assert.equal(heads.length >= 1, true, cls + ' rendered')
+  assert.equal(typeof heads[0].props.onPointerDown, 'function', cls + ' must start a drag')
+}
+assert.equal(
+  findByClass(dragChatTree, 'dsh-room-chatpanel')[0].props['data-dragging'],
+  'false',
+  'chat panel exposes its dragging state',
+)
+
 console.log('dsh-room client smoke test: PASS')

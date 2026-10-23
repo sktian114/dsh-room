@@ -151,11 +151,23 @@ const runningHost = {
 const stoppedHost = { running: false, room: null, urls: [], members: [], hostToken: '', workspaces: runningHost.workspaces, defaultWorkspace: runningHost.defaultWorkspace, workspace: null }
 const guestState = { ok: true, room: { name: '老王的开发间', needsCode: true, workspace: 'dsh space' }, members, workspace: { root: 'E:\\E Download\\AIWorking\\dsh space', entries } }
 
+const pickFolder = () => Promise.resolve('D:\\Backup\\共享资料')
 const views = {
-  hostRunning: render(React.createElement(moduleExports.__test.HostView, { host: runningHost, error: '', notify() {}, onRefresh() {} })),
+  hostRunning: render(React.createElement(moduleExports.__test.HostView, { host: runningHost, error: '', notify() {}, onRefresh() {}, pickFolder })),
   guestJoin: render(React.createElement(moduleExports.__test.GuestView, { guest: null, state: null, notify() {}, onJoin() {}, onState() {} })),
-  hostForm: render(React.createElement(moduleExports.__test.HostView, { host: stoppedHost, error: '', notify() {}, onRefresh() {} })),
+  hostForm: render(React.createElement(moduleExports.__test.HostView, { host: stoppedHost, error: '', notify() {}, onRefresh() {}, pickFolder })),
+  hostFormNoPicker: render(React.createElement(moduleExports.__test.HostView, { host: stoppedHost, error: '', notify() {}, onRefresh() {} })),
   guestJoined: render(React.createElement(moduleExports.__test.GuestView, { guest: { addr: 'http://172.16.1.130:8787', token: 't', name: '阿伟' }, state: guestState, notify() {}, onJoin() {}, onState() {} })),
+  // 下拉展开态：静态渲染拿不到交互，这里用同样的类名手写一份，只为核对视觉
+  selectOpen: '<div class="dsh-room-sel" data-open="true" style="width:200px">'
+    + '<button type="button" class="dsh-room-sel-trigger"><span class="dsh-room-sel-label">仅工作区可写</span>'
+    + '<span class="dsh-room-sel-chev">' + icon('chevron', 13, 1.9) + '</span></button>'
+    + '<div class="dsh-room-sel-pop" role="listbox" style="left:22px;top:392px;width:200px">'
+    + [['未开放', false], ['只读', false], ['仅工作区可写', true], ['完全权限', false]].map(([label, selected]) =>
+        '<div class="dsh-room-sel-opt" role="option" data-selected="' + selected + '" data-active="' + (label === '仅工作区可写') + '">'
+        + '<span class="dsh-room-sel-tick">' + icon('check', 12, 2.4) + '</span>'
+        + '<span class="dsh-room-sel-text">' + label + '</span></div>').join('')
+    + '</div></div>',
 }
 
 /* ── 聊天面板场景（左列群列表 + 右列消息流）── */
@@ -249,6 +261,11 @@ h2{font:600 12px/18px var(--dsw-font-family);letter-spacing:.08em;text-transform
 .mobile-frame[data-view=list] .dsh-room-chatmain{display:none}
 .mobile-frame[data-view=thread] .dsh-room-chatlist{display:none}
 .mobile-frame .dsh-room-chatlog{padding:12px}
+/* 下拉展开态：预览页里把浮层改成相对定位，好跟触发器一起入镜 */
+.dropdown-stage{position:relative;min-height:236px;padding:10px;border-radius:12px;
+  background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l3)}
+.dropdown-stage .dsh-room-sel-pop{position:absolute!important;left:12px!important;top:46px!important;
+  width:200px!important;max-height:none!important;animation:none!important}
 ${css}
 </style></head><body>
 <h2>dsh-room · 真实组件渲染（浅色）</h2>
@@ -257,6 +274,7 @@ ${css}
   <div class="slot"><div class="viewport">${shell(views.guestJoin, 'guest')}</div></div>
   <div class="slot"><div class="viewport">${shell(views.hostForm, 'host')}</div></div>
   <div class="slot"><div class="viewport">${shell(views.guestJoined, 'guest')}</div></div>
+  <div class="slot"><div class="viewport"><div class="dropdown-stage">${views.selectOpen}</div></div></div>
 </div>
 <h2 style="margin-top:28px">dsh-room · 聊天面板（房主 / 访客）</h2>
 <div class="preview-chat">${viewsChat.host}</div>
