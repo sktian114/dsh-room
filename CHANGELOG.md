@@ -1,5 +1,22 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.7 — 2026-10-24
+
+### 修掉「会话里看不到身份胶囊」的真因：服务没等到就静默放弃了
+
+0.1.6 在真机上没效果。原因：`uiConversation` 是会话插件**稍后**才提供的服务，
+插件 `apply` 那一刻 `ctx.get('uiConversation')` 拿到的是 `undefined`，注册被
+`try/catch` 静默吞掉——代码「成功」了，界面什么也没变。
+
+- 改用官方写法等依赖：`ctx.inject(['uiConversation'], …)`；插槽条目也改走
+  `ctx.slots.inject('conversation.user.text.node', …)`（与 `dsh-client-ui-skill`
+  注册 `key: 'skill'` 的写法一致），另留有限次轮询兜底。
+- **状态可见**：注册成功会往控制台打 `[dsh-room] 会话身份标记已启用…`；当前状态挂在
+  `<html data-dsh-room-author>` 与联机按钮的 `data-author` 上
+  （`ready / waiting-service / error / no-slots`），以后不用猜。
+- 实机验证（客房页面 `http://172.16.1.130:8787/`，headless Chrome 抓 console）：
+  `[dsh-room] 会话身份标记已启用：访客指令前会显示头像与昵称。`
+
 ## 0.1.6 — 2026-10-23
 
 ### 会话里也看得出「这条指令是谁发的」
