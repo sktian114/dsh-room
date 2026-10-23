@@ -157,6 +157,29 @@ const views = {
   hostForm: render(React.createElement(moduleExports.__test.HostView, { host: stoppedHost, error: '', notify() {}, onRefresh() {} })),
   guestJoined: render(React.createElement(moduleExports.__test.GuestView, { guest: { addr: 'http://172.16.1.130:8787', token: 't', name: '阿伟' }, state: guestState, notify() {}, onJoin() {}, onState() {} })),
 }
+
+/* ── 聊天面板场景（左列群列表 + 右列消息流）── */
+const demoGroups = [
+  { id: 'lobby', name: '大厅', agents: [] },
+  { id: 'g-fe', name: '前端小组', agents: [{ id: 's1', title: '重构助手' }] },
+  { id: 'g-lore', name: '世界观讨论', agents: [{ id: 's2', title: '设定审查' }, { id: 's3', title: '连续性检查' }] },
+]
+const demoMessages = [
+  { seq: 1, at: Date.now() - 600000, group: 'lobby', from: { kind: 'host', id: 'host', name: '老王' }, text: '人都到齐了吗？' },
+  { seq: 2, at: Date.now() - 540000, group: 'lobby', from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '到了，工作台刚打开。' },
+  { seq: 3, at: Date.now() - 420000, group: 'lobby', from: { kind: 'agent', id: 's1', name: '重构助手' }, text: '我把聊天视图拆成了右侧独立面板：左边是群列表，右边是消息流。' },
+  { seq: 4, at: Date.now() - 300000, group: 'g-fe', from: { kind: 'user', id: 'g2', name: '小鹿' }, text: '这个气泡和 DSH 的主题挺搭。' },
+  { seq: 5, at: Date.now() - 120000, group: 'g-lore', from: { kind: 'agent', id: 's2', name: '设定审查' }, text: '名册里「青芜界」的三个势力都对上了，没有矛盾。' },
+]
+const chatSeed = { groups: demoGroups, messages: demoMessages, self: 'g1', active: 'lobby' }
+const viewsChat = {
+  host: render(React.createElement(moduleExports.__test.ChatPanel, {
+    base: '', token: '', isHost: true, roomOn: true, roomName: '老王的开发间', initial: chatSeed,
+  })),
+  guest: render(React.createElement(moduleExports.__test.ChatPanel, {
+    base: '', token: '', isHost: false, roomOn: true, roomName: '老王的开发间', initial: Object.assign({}, chatSeed, { self: 'g2' }),
+  })),
+}
 const launch = render(React.createElement(registered.component, {}))
 
 function icon(name, size, stroke) {
@@ -211,6 +234,21 @@ h2{font:600 12px/18px var(--dsw-font-family);letter-spacing:.08em;text-transform
 .viewport .dsh-room-panel{position:relative;right:auto;bottom:auto;width:100%;max-height:none}
 .composer{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:14px;background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l3)}
 .grow{flex:1;color:var(--dsw-alias-label-tertiary);font-size:13px}
+/* 聊天面板在预览页里改成静态摆放（真实环境是 fixed 右侧浮层） */
+.preview-chat{grid-column:1 / -1}
+.preview-chat .dsh-room-chatpanel{position:relative!important;right:auto!important;top:auto!important;
+  transform:none!important;width:760px!important;max-width:100%!important;height:452px!important;
+  margin-bottom:22px;animation:none!important}
+/* 手机尺寸：直接按媒体查询里的规则摆一个 390px 宽的框 */
+.mobile-frame{width:390px;height:700px;border-radius:26px;overflow:hidden;position:relative;
+  background:var(--dsw-alias-bg-layer-2);border:9px solid #15171a;box-shadow:0 18px 40px rgba(0,0,0,.25)}
+.mobile-frame .dsh-room-chatpanel{position:absolute!important;inset:0!important;width:auto!important;
+  height:100%!important;max-height:none!important;border-radius:0!important;transform:none!important;
+  grid-template-columns:1fr!important;animation:none!important}
+.mobile-frame .dsh-room-chatback{display:inline-flex!important}
+.mobile-frame[data-view=list] .dsh-room-chatmain{display:none}
+.mobile-frame[data-view=thread] .dsh-room-chatlist{display:none}
+.mobile-frame .dsh-room-chatlog{padding:12px}
 ${css}
 </style></head><body>
 <h2>dsh-room · 真实组件渲染（浅色）</h2>
@@ -220,6 +258,14 @@ ${css}
   <div class="slot"><div class="viewport">${shell(views.hostForm, 'host')}</div></div>
   <div class="slot"><div class="viewport">${shell(views.guestJoined, 'guest')}</div></div>
 </div>
+<h2 style="margin-top:28px">dsh-room · 聊天面板（房主 / 访客）</h2>
+<div class="preview-chat">${viewsChat.host}</div>
+<div class="preview-chat">${viewsChat.guest}</div>
+<h2 style="margin-top:8px">手机 · 列表 → 消息 两级</h2>
+<div class="grid">
+  <div class="mobile-frame" data-view="list">${viewsChat.host}</div>
+  <div class="mobile-frame" data-view="thread">${viewsChat.host}</div>
+</div>
 <div class="theme-dark" data-ds-dark-theme="true" style="margin-top:28px;padding:20px;border-radius:16px;background:#0b0c0e">
 <h2 style="color:#6b7280">dsh-room · 真实组件渲染（深色）</h2>
 <div class="grid">
@@ -227,6 +273,7 @@ ${css}
   <div class="slot"><div class="viewport">${shell(views.guestJoined, 'guest')}</div></div>
   <div class="slot"><div class="viewport">${shell(views.guestJoin, 'guest')}</div></div>
 </div>
+<div class="preview-chat">${viewsChat.host}</div>
 </div>
 </body></html>`
 

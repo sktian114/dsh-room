@@ -85,7 +85,8 @@ assert.equal(typeof registered.component, 'function')
 const tree = registered.component()
 assert.equal(tree.type, 'Fragment')
 assert.ok(Array.isArray(tree.children))
-assert.equal(tree.children.length, 2)
+// 关闭状态：只有「联机」按钮，房间面板与聊天面板都不渲染
+assert.equal(tree.children.filter(Boolean).length, 1)
 assert.equal(tree.children[0].type, 'button')
 assert.equal(tree.children[0].children[1], '联机')
 
@@ -177,15 +178,29 @@ function placeholders(node, out) {
 }
 assert.ok(placeholders(joinTree).includes('172.16.1.130:8787'), 'join placeholder missing')
 
-const panelTexts = texts(moduleExports.__test.Panel({ onClose() {} }))
-for (const expected of ['房间联机', '房主', '访客', '聊天']) {
+const panelTree = moduleExports.__test.Panel({ onClose() {}, onChat() {} })
+const panelTexts = texts(panelTree)
+for (const expected of ['房间联机', '房主', '访客']) {
   assert.ok(panelTexts.includes(expected), 'panel missing: ' + expected)
 }
+// 聊天改为右上角独立入口（不是第三个标签）
+assert.ok(JSON.stringify(panelTree).includes('打开房间聊天'), 'panel should expose the chat entry')
 
-// 聊天群视图：房间未开启时给一句提示，而不是空白
-const chatTree = moduleExports.__test.ChatView({ base: '', token: '', isHost: false, roomOn: false })
-const chatOffTexts = texts(chatTree)
-assert.ok(chatOffTexts.some((text) => text.includes('先开房或加入房间')), 'chat view should hint when room is off')
+// 聊天面板：房间未开启时给一句提示，而不是空白
+const chatOffTree = moduleExports.__test.ChatPanel({ base: '', token: '', isHost: false, roomOn: false })
+const chatOffTexts = texts(chatOffTree)
+assert.ok(chatOffTexts.some((text) => text.includes('开房或加入房间')), 'chat panel should hint when room is off')
+assert.ok(chatOffTexts.some((text) => text.includes('房间聊天')), 'chat panel should title itself')
+
+// 房主在聊天面板里能看到「新建群」和 agent 入口；房客看不到
+const hostChatTexts = texts(moduleExports.__test.ChatPanel({
+  base: '', token: '', isHost: true, roomOn: true, roomName: '老王的开发间',
+}))
+assert.ok(hostChatTexts.includes('新建群'), 'host chat panel should offer group creation')
+assert.ok(hostChatTexts.includes('agent'), 'host chat panel should expose the agent picker')
+assert.ok(hostChatTexts.some((text) => text.includes('这里还很安静')), 'host chat panel should show the empty state')
+const guestChatTree = moduleExports.__test.ChatPanel({ base: '', token: '', isHost: false, roomOn: true })
+assert.ok(!JSON.stringify(guestChatTree).includes('新建群'), 'guest chat panel must not offer group creation')
 
 // 心跳保活：guestState 由父组件持有，面板直接渲染成员（手机切后台回来不该是 0 人）
 const guestPanelTexts = texts(moduleExports.__test.Panel({
