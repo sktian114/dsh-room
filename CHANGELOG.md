@@ -1,5 +1,37 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.1 — 2026-10-23
+
+### 房间聊天群（新）
+
+- 面板新增第三个标签「聊天」；默认群「大厅」自动存在，房间内所有人都在里面，不可删除。
+- 房主可新建 / 删除任意多个群；房主 + 全部房客天然属于每个群，无需入群操作。
+- 房主可把**工作区里的会话（agent）**勾选进当前群；agent 只能读写自己被拉进的群。
+- agent 侧新增工具：`room_chat_list` / `room_chat_read`（支持 `since` 增量）/ `room_chat_post`。
+- 消息仅存内存（房间关闭即清空），全局单调 `seq` 供增量同步；
+  面板 3 秒一轮拉取，房主操作与 agent 发言立刻可见。
+
+### 修复：加载插件会让 DSH 直接崩溃
+
+- 现象：`dsh: fatal load failure: TypeError: Cannot read properties of undefined (reading 'render')`，
+  DSH 崩溃日志 `crash-*-host.log` 指向 `defineTool()`；整个桌面端起不来。
+- 原因：`@deepseek-ai/dsh-tools` 的 `defineTool()` / `tools.register()` 强制要求
+  工具定义带 `output: { schema, render }`，缺 `render` 立即抛错；**插件加载期的异常是致命的**。
+- 修法：
+  - 不再依赖 `defineTool()`，改为手写工具定义（`parameters` 用 DSH 支持的 JSON Schema 子集，
+    `output.schema` 用 `{ type: 'object', additionalProperties: true }`，`output.render` 返回 text part）。
+  - 整段注册包在 `try/catch` 里：任何一步失败只是「agent 看不到聊天群」，房间功能不受影响。
+  - 新增 `test/schema.test.mjs`：直接调用 DSH 安装目录里**真实的**
+    `assertSupportedJsonSchema` / `validateJsonSchemaValue` 校验我们注册的工具定义，
+    把「DSH 会崩」这类问题挡在开发阶段（找不到 DSH 时打印 SKIP 退出）。
+  - `test/host.test.mjs` 的假 `ctx.tools.register` 现在复刻 DSH 的硬校验，缺 `output.render` 直接抛。
+
+### 修复：agent 选择器拿不到会话
+
+- 房主页面里直接 `POST /api/session/list` 会撞 DSH 的令牌栅栏（`/api` 只认 cookie）。
+- 新增房主专用接口 `GET /room/api/host/agents`：插件在宿主内部用启动令牌换一次
+  `dsh-auth-*` cookie，再代问会话列表，返回 `{ ok, agents: [{ id, title }] }`；401 时自动换 cookie 重试一次。
+
 ## 0.1.0 — 2026-10-18
 
 首个版本（私有开发版，未发布到 npm；发布计划暂缓）。

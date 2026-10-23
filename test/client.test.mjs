@@ -178,9 +178,14 @@ function placeholders(node, out) {
 assert.ok(placeholders(joinTree).includes('172.16.1.130:8787'), 'join placeholder missing')
 
 const panelTexts = texts(moduleExports.__test.Panel({ onClose() {} }))
-for (const expected of ['房间联机', '房主', '访客']) {
+for (const expected of ['房间联机', '房主', '访客', '聊天']) {
   assert.ok(panelTexts.includes(expected), 'panel missing: ' + expected)
 }
+
+// 聊天群视图：房间未开启时给一句提示，而不是空白
+const chatTree = moduleExports.__test.ChatView({ base: '', token: '', isHost: false, roomOn: false })
+const chatOffTexts = texts(chatTree)
+assert.ok(chatOffTexts.some((text) => text.includes('先开房或加入房间')), 'chat view should hint when room is off')
 
 // 心跳保活：guestState 由父组件持有，面板直接渲染成员（手机切后台回来不该是 0 人）
 const guestPanelTexts = texts(moduleExports.__test.Panel({

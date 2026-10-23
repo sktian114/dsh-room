@@ -30,6 +30,7 @@ import { join, resolve, sep, basename } from 'node:path'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createGuestGuard } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
+import { createChatStore } from './lib/chat.mjs'
 
 const NAME = 'dsh-room'
 // 版本号以 package.json 为唯一来源，避免发版时两处不一致。
@@ -451,6 +452,11 @@ function setup(ctx, config) {
   const joinAttempts = new Map()
   const handshakes = new Map()
 
+  // 房间聊天群：人在群里（房主 + 所有访客），agent 由房主手动拉进指定群。
+  // 只存内存：房间停了记录就没了，不给磁盘多留一份要管权限的数据。
+  const chat = createChatStore()
+  chat.ensureLobby('大厅')
+
   // 每个房客 TCP 连接一份守卫状态（streamId→端点、workspaceId→路径 的对应关系）
   const sharedWorkspaces = new Map()
   const guards = new WeakMap()
@@ -586,6 +592,145 @@ function setup(ctx, config) {
     }
   }
 
+  function listSessionsForHost() {
+    return new Promise((resolve) => {
+      const payload = JSON.stringify({
+        type: 'client-request',
+        rpcId: 'r-agents-' + Date.now(),
+        method: 'session/list',
+        payload: { args: { _request: {} } },
+      })
+      let settled = false
+      const done = (value) => {
+        if (settled) return
+        settled = true
+        resolve(value)
+      }
+      const toAgents = (parsed) => {
+        const items = (parsed && parsed.result && parsed.result.value && parsed.result.value.items) || []
+        return items
+          .map((item) => {
+            const title = item && item.projections && item.projections.values && item.projections.values.title
+            const folder = item && item.cwd ? String(item.cwd).split(/[\\/]/).filter(Boolean).pop() : ''
+            return { id: String((item && item.sessionId) || ''), title: String(title || folder || '会话') }
+          })
+          .filter((agent) => agent.id)
+      }
+      // 先用缓存 cookie；401/403 就重新用启动令牌换一次 cookie 再试。
+      const attempt = (cookie, retried) => {
+        let request = null
+        try {
+          request = httpRequest({
+            host: '127.0.0.1',
+            port: webPort,
+            path: '/api/session/list',
+            method: 'POST',
+            headers: Object.assign({
+              host: '127.0.0.1:' + webPort,
+              'content-type': 'application/json',
+              'content-length': Buffer.byteLength(payload),
+            }, cookie ? { cookie } : {}),
+          }, (response) => {
+            const chunks = []
+            response.on('data', (chunk) => chunks.push(chunk))
+            response.on('end', () => {
+              const status = Number(response.statusCode) || 0
+              if ((status === 401 || status === 403) && !retried) {
+                hostCookie = ''
+                hostCookiePromise = null
+                dshCookie().then((fresh) => attempt(fresh, true)).catch(() => done([]))
+                return
+              }
+              let parsed = null
+              try {
+                parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+              } catch {
+                parsed = null
+              }
+              if (status !== 200) {
+                say('warn', '[' + NAME + '] 列会话返回 HTTP ' + status + '（agent 选择器为空）')
+                done([])
+                return
+              }
+              done(toAgents(parsed))
+            })
+          })
+        } catch (error) {
+          say('warn', '[' + NAME + '] 列会话请求失败：' + (error && error.message ? error.message : error))
+          done([])
+          return
+        }
+        request.on('error', (error) => {
+          say('warn', '[' + NAME + '] 列会话失败：' + (error && error.message ? error.message : error))
+          done([])
+        })
+        request.setTimeout(6000, () => {
+          try { request.destroy() } catch { /* 忽略 */ }
+          done([])
+        })
+        request.end(payload)
+      }
+      if (hostCookie) {
+        attempt(hostCookie, false)
+        return
+      }
+      dshCookie().then((cookie) => attempt(cookie, true)).catch(() => done([]))
+    })
+  }
+
+  // DSH 的 /api 只认 cookie（启动令牌只能换首页 cookie），所以先拿令牌换一次 cookie 再复用。
+  let hostCookie = ''
+  let hostCookiePromise = null
+
+  function dshCookie() {
+    if (hostCookie) return Promise.resolve(hostCookie)
+    if (hostCookiePromise) return hostCookiePromise
+    hostCookiePromise = new Promise((resolve) => {
+      const token = launchToken()
+      if (!token) {
+        resolve('')
+        return
+      }
+      let request = null
+      try {
+        request = httpRequest({
+          host: '127.0.0.1',
+          port: webPort,
+          path: '/?token=' + encodeURIComponent(token),
+          method: 'GET',
+          headers: { host: '127.0.0.1:' + webPort, accept: 'text/html' },
+        }, (response) => {
+          const raw = response.headers['set-cookie']
+          response.resume()
+          const cookies = Array.isArray(raw) ? raw : (raw ? [raw] : [])
+          const picked = cookies
+            .map((item) => String(item).split(';')[0].trim())
+            .filter((item) => item.startsWith('dsh-auth'))
+          hostCookie = picked.join('; ')
+          if (!hostCookie) say('warn', '[' + NAME + '] 换 cookie 失败：响应里没有 dsh-auth-*')
+          resolve(hostCookie)
+        })
+      } catch (error) {
+        say('warn', '[' + NAME + '] 换 cookie 请求失败：' + (error && error.message ? error.message : error))
+        resolve('')
+        return
+      }
+      request.on('error', (error) => {
+        say('warn', '[' + NAME + '] 换 cookie 出错：' + (error && error.message ? error.message : error))
+        resolve('')
+      })
+      request.setTimeout(6000, () => {
+        try { request.destroy() } catch { /* 忽略 */ }
+        resolve('')
+      })
+      request.end()
+    }).then((cookie) => {
+      hostCookiePromise = null
+      return cookie
+    })
+    return hostCookiePromise
+  }
+
   function prune() {
     const now = Date.now()
     for (const [id, member] of members) {
@@ -659,6 +804,29 @@ function setup(ctx, config) {
     }
     record.count += 1
     return record.count > 8
+  }
+
+  /** 房主本机直连（不是房间代理转进来的请求）。 */
+  function isDirectHost(req) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').trim()
+    return !forwarded && isLoopback(req.socket && req.socket.remoteAddress)
+  }
+
+  /**
+   * 聊天身份：房主本机直连 = host；带房间令牌 = 人（host 令牌也算 host）；
+   * 其它一律 null（代理转进来的房客请求必然带 x-forwarded-for）。
+   */
+  function chatIdentity(req, url) {
+    const member = authMember(req, url)
+    if (member) {
+      return {
+        kind: member.kind === 'host' ? 'host' : 'user',
+        id: member.id,
+        name: member.name || (member.kind === 'host' ? '房主' : '访客'),
+      }
+    }
+    if (isDirectHost(req)) return { kind: 'host', id: 'host', name: cfg.name || '房主' }
+    return null
   }
 
   function publicRoom() {
@@ -1212,6 +1380,113 @@ function setup(ctx, config) {
         return
       }
 
+      /* ── 聊天群：人看全部群，agent 只看被拉进的群 ── */
+
+      if (path === PREFIX + '/api/chat/sync' && req.method === 'GET') {
+        const who = chatIdentity(req, url)
+        if (!who) {
+          sendJson(res, 401, { ok: false, error: 'unauthorized', stale: true }, cors)
+          return
+        }
+        if (!room.active) {
+          sendJson(res, 404, { ok: false, error: 'no-room' }, cors)
+          return
+        }
+        const since = Math.max(0, Number(url.searchParams.get('since') || 0) || 0)
+        sendJson(res, 200, { ok: true, self: who, ...chat.sync({ since }) }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/chat/send' && req.method === 'POST') {
+        const who = chatIdentity(req, url)
+        if (!who) {
+          sendJson(res, 401, { ok: false, error: 'unauthorized', stale: true }, cors)
+          return
+        }
+        if (!room.active) {
+          sendJson(res, 404, { ok: false, error: 'no-room' }, cors)
+          return
+        }
+        const body = (await readJson(req)) || {}
+        const result = chat.post({
+          groupId: cleanText(body.group, 64) || 'lobby',
+          from: { kind: who.kind, id: who.id, name: who.name },
+          text: body.text,
+        })
+        if (result.error) {
+          sendJson(res, 400, { ok: false, error: result.error }, cors)
+          return
+        }
+        sendJson(res, 200, { ok: true, message: result.message }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/chat/group' && req.method === 'POST') {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          return
+        }
+        const body = (await readJson(req)) || {}
+        const result = chat.createGroup({ name: body.name })
+        if (result.error) {
+          sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
+          return
+        }
+        say('info', '[' + NAME + '] 新建聊天群：' + result.group.name)
+        sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/chat/group' && req.method === 'DELETE') {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          return
+        }
+        const result = chat.removeGroup(cleanText(url.searchParams.get('group'), 64))
+        if (result.error) {
+          sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
+          return
+        }
+        sendJson(res, 200, { ok: true, groups: chat.listGroups() }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/chat/member' && req.method === 'POST') {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          return
+        }
+        const body = (await readJson(req)) || {}
+        const groupId = cleanText(body.group, 64) || 'lobby'
+        const agentId = cleanText(body.agentId || (body.agent && body.agent.id), 128)
+        if (!agentId) {
+          sendJson(res, 400, { ok: false, error: 'bad-agent' }, cors)
+          return
+        }
+        const result = body.remove
+          ? chat.removeAgent(groupId, agentId)
+          : chat.addAgent(groupId, { id: agentId, title: cleanText(body.agentTitle || (body.agent && body.agent.title), 60) })
+        if (result.error) {
+          sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
+          return
+        }
+        say('info', '[' + NAME + '] 群成员更新：' + groupId + ' ← ' + agentId)
+        sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
+        return
+      }
+
+      if (path === PREFIX + '/api/host/agents' && req.method === 'GET') {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, { ok: false, error: 'host-only' }, cors)
+          return
+        }
+        // 房主页自己 POST /api/session/list 会撞上 DSH 的令牌栅栏（旁观者视角未必带得上 cookie），
+        // 所以由插件在宿主内部代问一次：带启动令牌直连 127.0.0.1。
+        const agents = await listSessionsForHost()
+        sendJson(res, 200, { ok: true, agents }, cors)
+        return
+      }
+
       if (path === PREFIX + '/api/list' && req.method === 'GET') {
         const member = authMember(req, url)
         if (!member) {
@@ -1433,6 +1708,159 @@ function setup(ctx, config) {
       })
     } catch (error) {
       say('warn', '[' + NAME + '] 注册 session/created 钩子失败：' + (error && error.message ? error.message : error))
+    }
+  }
+
+  // 把聊天群做成 agent 能调用的工具：读群消息、发消息。
+  //
+  // 两条硬约束（都是踩过的坑）：
+  //   1. DSH 的 tools.register 要求每个工具自带 output: { schema, render }，
+  //      少一个就是 TypeError；而 `defineTool()` 本身也在读 options.output.render。
+  //   2. 插件加载期抛出的异常是**致命**的：DSH 会直接 fatal load failure 起不来。
+  // 所以这里手写工具定义（不依赖 @deepseek-ai/dsh-tools 的 defineTool），
+  // 并且整段兜在 try/catch 里，任何一步失败都只是「agent 看不到聊天」，房间照常能用。
+  const chatToolsEnabled = (() => {
+    if (config && config.chatTools === false) return false
+    const flag = String((process.env.DSH_ROOM_CHAT_TOOLS || '')).trim().toLowerCase()
+    return !(flag === '0' || flag === 'off' || flag === 'false' || flag === 'no')
+  })()
+
+  if (chatToolsEnabled) {
+    try {
+      registerChatTools()
+    } catch (error) {
+      say('warn', '[' + NAME + '] 聊天工具注册失败（房间本身不受影响）：' + (error && error.message ? error.message : error))
+    }
+  }
+
+  function registerChatTools() {
+    const agentInfo = (exec) => {
+      const session = exec && exec.agent && exec.agent.session
+      const id = String((session && session.id) || '')
+      const title = String((session && (session.title || (session.projections && session.projections.values && session.projections.values.title))) || '')
+      return { id, title: title || (id ? id.slice(0, 12) : 'agent') }
+    }
+
+    // output.schema 必须在 DSH 支持的 JSON Schema 子集内：type/oneOf/properties/
+    // required/additionalProperties/items/enum/const + 注释字段。
+    const textOutput = {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value === undefined ? null : value) }],
+    }
+
+    const groupParam = { type: 'string', description: '群 id，例如 lobby（大厅）' }
+
+    const tools = [
+      {
+        name: 'room_chat_list',
+        description: '列出房间里的聊天群。返回每个群的 id、名字、成员 agent、最后一条消息，以及你自己是否被拉进了这个群。想知道房间里的实时讨论时先调它。',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        output: textOutput,
+        async execute(_args, exec) {
+          const agent = agentInfo(exec)
+          return {
+            ok: true,
+            self: agent.id,
+            groups: chat.listGroups().map((group) => ({
+              id: group.id,
+              name: group.name,
+              agents: group.agents.map((item) => item.title),
+              lastText: group.lastText,
+              lastAt: group.lastAt,
+              joined: chat.isAgentMember(group.id, agent.id),
+            })),
+          }
+        },
+      },
+      {
+        name: 'room_chat_read',
+        description: '读取某个聊天群的消息（只读）。只能读你自己被拉进的群。since 是上次看到的序号，用来只看新消息。',
+        parameters: {
+          type: 'object',
+          properties: {
+            group: groupParam,
+            since: { type: 'number', description: '只返回序号大于它的消息' },
+            limit: { type: 'number', description: '最多返回多少条，默认 50' },
+          },
+          required: ['group'],
+          additionalProperties: false,
+        },
+        output: textOutput,
+        async execute(args, exec) {
+          const agent = agentInfo(exec)
+          const groupId = String((args && args.group) || 'lobby')
+          if (!chat.isAgentMember(groupId, agent.id)) return { ok: false, error: 'not-member', group: groupId }
+          const messages = chat.messagesOf(groupId, args && args.since, Math.min(200, Number(args && args.limit) || 50)) || []
+          return {
+            ok: true,
+            group: groupId,
+            messages: messages.map((message) => ({ seq: message.seq, at: message.at, from: message.from.name, kind: message.from.kind, text: message.text })),
+          }
+        },
+      },
+      {
+        name: 'room_chat_post',
+        description: '往某个聊天群发一条消息（房间里的房主和访客都能立刻看到）。只能发到你自己被拉进的群。回答完、或做完一个阶段的工作后，用它同步进展。',
+        parameters: {
+          type: 'object',
+          properties: {
+            group: groupParam,
+            text: { type: 'string', description: '要发的内容，纯文本，不要超过 2000 字' },
+          },
+          required: ['group', 'text'],
+          additionalProperties: false,
+        },
+        output: textOutput,
+        async execute(args, exec) {
+          const agent = agentInfo(exec)
+          const groupId = String((args && args.group) || 'lobby')
+          const result = chat.post({
+            groupId,
+            from: { kind: 'agent', id: agent.id, name: agent.title },
+            text: args && args.text,
+          })
+          if (result.error) return { ok: false, error: result.error, group: groupId }
+          return { ok: true, group: groupId, seq: result.message.seq }
+        },
+      },
+    ]
+
+    const install = (scope, how) => {
+      const service = scope && scope.tools
+      if (!service || typeof service.register !== 'function') return false
+      let registered = 0
+      for (const tool of tools) {
+        try {
+          service.register(tool)
+          registered += 1
+        } catch (error) {
+          say('warn', '[' + NAME + '] 注册聊天工具 ' + tool.name + ' 失败：' + (error && error.message ? error.message : error))
+        }
+      }
+      if (registered > 0) {
+        say('info', '[' + NAME + '] 已注册房间聊天工具（' + how + '，' + registered + '/' + tools.length + '）：room_chat_list / room_chat_read / room_chat_post')
+      }
+      return registered > 0
+    }
+
+    try {
+      if (install(ctx, 'direct')) return
+    } catch (error) {
+      say('warn', '[' + NAME + '] 直接注册聊天工具异常：' + (error && error.message ? error.message : error))
+    }
+
+    try {
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['tools'], (scoped) => {
+          try {
+            install(scoped, 'inject')
+          } catch (error) {
+            say('warn', '[' + NAME + '] inject 注册聊天工具异常：' + (error && error.message ? error.message : error))
+          }
+        })
+      }
+    } catch (error) {
+      say('warn', '[' + NAME + '] inject 聊天工具失败（房间本身不受影响）：' + (error && error.message ? error.message : error))
     }
   }
 

@@ -69,3 +69,31 @@
   2. 写回时删掉 content-encoding / content-length，并把 content-type 设为 pplication/json; charset=utf-8。
 - 否则浏览器拿到"明文 body + gzip 头"会报 ERR_CONTENT_DECODING_FAILED：页面不崩，但**会话列表/工作区对话会整块消失**（session/list 请求失败），工作区名字却还在——非常难猜，务必按上面的做法处理。
 - 所有 es.writeHead 前都要判 !res.headersSent && !res.writableEnded；代理回调里的任何异常都要自己 catch，否则会成为宿主的 uncaught exception（DSH 会直接 fatal 退出）。
+
+## 注册 agent 工具：少一个 `output.render` 就炸掉整个 DSH（2026-10-23 实测）
+
+- DSH 的 `tools.register(definition)` 只接受这种形状：
+  `{ name, description, parameters(<JSON Schema>), output: { schema, render, presentationMeta? }, execute }`。
+  `output` 缺失、或 `output.render` 不是函数 → **TypeError**；而**插件加载期的异常是致命的**，
+  DSH 会直接 `fatal load failure` 退出（桌面端表现为“崩溃，必须重启”）。
+- `@deepseek-ai/dsh-tools` 的 `defineTool()` 同样在函数体第一行读 `options.output.render`，
+  所以用 `defineTool({...})` 时**也必须**写 `output.schema` + `output.render`，不能只写 `parameters` + `execute`。
+- schema 只能落在 DSH 支持的子集：`type / oneOf / properties / required / additionalProperties / items / enum / const`
+  + 注释字段（`description` / `title`）。`type` 允许
+  `string|number|integer|boolean|null|array|object|json`；`type` 与 `oneOf` 不能同时出现。
+  最省事的输出 schema：`{ type: 'object', additionalProperties: true }`，配
+  `render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }]`。
+- 结论：**工具注册必须整段 try/catch**，并且要有开关（本项目用 `config.chatTools === false` 或 `DSH_ROOM_CHAT_TOOLS=0`）。
+  `test/schema.test.mjs` 会直接调用 DSH 安装目录里真实的 `assertSupportedJsonSchema` /
+  `validateJsonSchemaValue` 校验工具定义，把这类崩溃挡在开发阶段。
+
+## 房主侧代问 DSH 内部接口要带 cookie，光有启动令牌不够
+
+- `?token=<启动令牌>` 只能用于**根页面**：DSH 用它换一次 `dsh-auth-*` cookie（303 + Set-Cookie）。
+  直接 `POST /api/session/list?token=...` 仍然 401。
+- 插件要在宿主内部读会话列表，正确姿势是：
+  1. `GET /?token=<launchToken>`（Host 头写 `127.0.0.1:<port>`），抓 `set-cookie` 里的 `dsh-auth-*`；
+  2. 带 `cookie` 头 `POST /api/session/list`，信封
+     `{ type:'client-request', rpcId, method:'session/list', payload:{ args:{ _request:{} } } }`；
+  3. 401/403 就丢掉缓存 cookie、重新换一次再试。
+- 这样房主面板的「agent 选择器」不用依赖浏览器 cookie，也不用把 `/api/*` 暴露给房客。

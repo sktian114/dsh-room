@@ -92,6 +92,26 @@ fake.on('upgrade', (req, socket) => {
 
 const fakePort = await listen(fake)
 let dispose = null
+// 复刻 DSH 的 tools.register 硬校验：output 缺 render 就抛 TypeError。
+// 真实的 DSH 会把这个异常当成插件加载失败 → 整个 DSH 起不来（我们踩过一次）。
+const registeredTools = new Map()
+const fakeTools = {
+  register(definition) {
+    const name = (definition && definition.name) || '(unnamed)'
+    const output = definition && definition.output
+    if (output === undefined || typeof output !== 'object' || typeof output.render !== 'function') {
+      throw new TypeError('tool "' + name + '" must declare output { schema, render, presentationMeta? }')
+    }
+    if (!definition.parameters || typeof definition.parameters !== 'object') {
+      throw new TypeError('tool "' + name + '" must declare a parameters schema object')
+    }
+    if (typeof definition.execute !== 'function') {
+      throw new TypeError('tool "' + name + '" must declare execute')
+    }
+    registeredTools.set(name, definition)
+    return () => { registeredTools.delete(name) }
+  },
+}
 const ctx = {
   logger: () => ({ info() {}, warn() {}, error() {} }),
   webServer: {
@@ -101,6 +121,7 @@ const ctx = {
   connection: {
     authenticatedUrl(base) { return base + '/?token=test-token' },
   },
+  tools: fakeTools,
   effect(fn) { dispose = fn() },
   get() { return null },
 }
@@ -385,6 +406,105 @@ await new Promise((resolve, reject) => {
   request.on('error', (error) => { clearTimeout(timer); reject(error) })
   request.end()
 })
+
+// 8.5 房间聊天群：人发消息、房主建群拉 agent、房客越权被拒
+console.log('step: chat')
+const guestToken = encodeURIComponent(join.json.token)
+const chatSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: 'lobby', text: '大家好' })
+assert.equal(chatSend.status, 200)
+assert.equal(chatSend.json.ok, true)
+assert.equal(chatSend.json.message.seq, 1)
+assert.equal(chatSend.json.message.from.kind, 'user')
+
+const chatSync = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=0')
+assert.equal(chatSync.status, 200)
+assert.equal(chatSync.body.self.kind, 'user')
+assert.equal(chatSync.body.groups[0].id, 'lobby')
+assert.equal(chatSync.body.messages.length, 1)
+
+const hostSync = await httpGetJson(base + '/room/api/chat/sync?since=0')
+assert.equal(hostSync.status, 200)
+assert.equal(hostSync.body.self.kind, 'host')
+
+const madeGroup = await post('/room/api/host/chat/group', { name: '前端小组' }, base)
+assert.equal(madeGroup.status, 200)
+const groupId = madeGroup.json.group.id
+assert.equal(madeGroup.json.groups.length, 2)
+
+const addAgent = await post('/room/api/host/chat/member', { group: groupId, agentId: 'session-test', agentTitle: '重构助手' }, base)
+assert.equal(addAgent.status, 200)
+assert.equal(addAgent.json.group.agents[0].title, '重构助手')
+
+const groupSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '在吗' })
+assert.equal(groupSend.json.message.seq, 2)
+const incremental = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=1')
+assert.deepEqual(incremental.body.messages.map((m) => m.text), ['在吗'])
+
+// 房客不能冒充房主建群（请求经过代理时带 x-forwarded-for）
+const hijack = await fetch(roomBase + '/room/api/host/chat/group', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-forwarded-for': '192.168.1.99' },
+  body: JSON.stringify({ name: '偷偷建群' }),
+})
+assert.equal(hijack.status, 403)
+const hijackJson = await hijack.json()
+assert.equal(hijackJson.error, 'host-only')
+
+// 不存在的群发消息 → 400；空消息 → 400
+const noGroup = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: 'nope', text: 'x' })
+assert.equal(noGroup.status, 400)
+assert.equal(noGroup.json.error, 'no-group')
+const emptyText = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: 'lobby', text: '   ' })
+assert.equal(emptyText.status, 400)
+assert.equal(emptyText.json.error, 'empty')
+
+// 8.6 聊天工具注册：必须是 DSH 认的形状（output.schema + output.render），
+//     否则 register 抛错、DSH 直接 fatal load failure 起不来。
+console.log('step: chat tools')
+assert.deepEqual([...registeredTools.keys()].sort(), ['room_chat_list', 'room_chat_post', 'room_chat_read'])
+const agentExec = { agent: { session: { id: 'session-test', title: '重构助手' } } }
+const outsiderExec = { agent: { session: { id: 'session-other', title: '局外人' } } }
+const listDef = registeredTools.get('room_chat_list')
+const readDef = registeredTools.get('room_chat_read')
+const postDef = registeredTools.get('room_chat_post')
+for (const def of [listDef, readDef, postDef]) {
+  assert.equal(typeof def.output.render, 'function')
+  assert.equal(def.output.schema.type, 'object')
+  const parts = def.output.render({}, { ok: true })
+  assert.equal(parts[0].type, 'text')
+  assert.equal(typeof parts[0].text, 'string')
+}
+
+const listed = await listDef.execute({}, agentExec)
+assert.equal(listed.ok, true)
+assert.ok(listed.groups.some((group) => group.id === groupId && group.joined), 'agent should be listed as joined')
+
+// 没被拉进来的 agent 读不到、也发不了
+const deniedRead = await readDef.execute({ group: groupId }, outsiderExec)
+assert.equal(deniedRead.error, 'not-member')
+const deniedPost = await postDef.execute({ group: groupId, text: '偷偷发言' }, outsiderExec)
+assert.equal(deniedPost.error, 'not-member')
+
+// 被拉进来的 agent 能读能发，房客那边会看到
+const read1 = await readDef.execute({ group: groupId, since: 0 }, agentExec)
+assert.deepEqual(read1.messages.map((message) => message.text), ['在吗'])
+const agentPost = await postDef.execute({ group: groupId, text: '工具发言' }, agentExec)
+assert.equal(agentPost.ok, true)
+const afterAgent = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=2')
+assert.deepEqual(afterAgent.body.messages.map((message) => message.from.kind), ['agent'])
+
+// 8.7 agent 选择器接口：房主直连能拿到列表（上游假服务不给 session/list 时就是空数组，
+//     但不能 500），房客经代理打进来必须被 403 拦掉。
+console.log('step: host agents')
+const agentPick = await httpGetJson(base + '/room/api/host/agents')
+assert.equal(agentPick.status, 200)
+assert.equal(agentPick.body.ok, true)
+assert.ok(Array.isArray(agentPick.body.agents), 'agents should be an array')
+const agentPickGuest = await fetch(roomBase + '/room/api/host/agents', {
+  headers: { 'x-forwarded-for': '192.168.1.99' },
+})
+assert.equal(agentPickGuest.status, 403)
+assert.equal((await agentPickGuest.json()).error, 'host-only')
 
 // 9. 停止（必须是本机直连；房客走代理会被 host-only 拦掉）
 const stopped = await post('/room/api/host/stop', {}, base)
