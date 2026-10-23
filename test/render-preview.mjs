@@ -177,11 +177,13 @@ const demoGroups = [
   { id: 'g-lore', name: '世界观讨论', agents: [{ id: 's2', title: '设定审查' }, { id: 's3', title: '连续性检查' }] },
 ]
 const demoMessages = [
-  { seq: 1, at: Date.now() - 600000, group: 'lobby', from: { kind: 'host', id: 'host', name: '老王' }, text: '人都到齐了吗？' },
-  { seq: 2, at: Date.now() - 540000, group: 'lobby', from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '到了，工作台刚打开。' },
-  { seq: 3, at: Date.now() - 420000, group: 'lobby', from: { kind: 'agent', id: 's1', name: '重构助手' }, text: '我把聊天视图拆成了右侧独立面板：左边是群列表，右边是消息流。' },
-  { seq: 4, at: Date.now() - 300000, group: 'g-fe', from: { kind: 'user', id: 'g2', name: '小鹿' }, text: '这个气泡和 DSH 的主题挺搭。' },
-  { seq: 5, at: Date.now() - 120000, group: 'g-lore', from: { kind: 'agent', id: 's2', name: '设定审查' }, text: '名册里「青芜界」的三个势力都对上了，没有矛盾。' },
+  { seq: 1, at: Date.now() - 660000, group: 'lobby', from: { kind: 'system', id: 'room', name: '系统' }, text: '阿伟 加入了房间' },
+  { seq: 2, at: Date.now() - 600000, group: 'lobby', from: { kind: 'host', id: 'host', name: '老王' }, text: '人都到齐了吗？' },
+  { seq: 3, at: Date.now() - 540000, group: 'lobby', from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '到了，工作台刚打开。' },
+  { seq: 4, at: Date.now() - 480000, group: 'lobby', from: { kind: 'user', id: 'g3', name: '阿伟' }, text: '我是另一个阿伟（手机端），头像颜色跟我俩不一样吧？' },
+  { seq: 5, at: Date.now() - 420000, group: 'lobby', from: { kind: 'agent', id: 's1', name: '重构助手' }, text: '我把聊天视图拆成了右侧独立面板：左边是群列表，右边是消息流。' },
+  { seq: 6, at: Date.now() - 300000, group: 'g-fe', from: { kind: 'user', id: 'g2', name: '小鹿' }, text: '这个气泡和 DSH 的主题挺搭。' },
+  { seq: 7, at: Date.now() - 120000, group: 'g-lore', from: { kind: 'agent', id: 's2', name: '设定审查' }, text: '名册里「青芜界」的三个势力都对上了，没有矛盾。' },
 ]
 const chatSeed = { groups: demoGroups, messages: demoMessages, self: 'g1', active: 'lobby' }
 const viewsChat = {
