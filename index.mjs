@@ -32,6 +32,7 @@ import { createGuestGuard } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
 import { denyBody } from './lib/deny.mjs'
+import { markPromptBody } from './lib/attribute.mjs'
 
 const NAME = 'dsh-room'
 // 版本号以 package.json 为唯一来源，避免发版时两处不一致。
@@ -1218,6 +1219,20 @@ function setup(ctx, config) {
           return
         }
         if (verdict && verdict.create) pendingCreate = verdict.create
+        // 房客发来的指令打上「谁说的」标记：DSH 的用户消息没有作者字段，
+        // 不打标记的话房主和模型都分不清是哪个访客发的。
+        if (pathname === '/api/session/prompt') {
+          let who = null
+          try { who = authMember(req, new URL(String(req.url || '/'), 'http://room.invalid')) } catch { who = null }
+          if (who && who.kind !== 'host') {
+            const marked = markPromptBody(text, { name: who.name })
+            if (marked !== text) {
+              try { upstream.setHeader('content-length', Buffer.byteLength(marked, 'utf8')) } catch { /* 忽略 */ }
+              upstream.end(marked)
+              return
+            }
+          }
+        }
         upstream.end(text)
       })
     } else {

@@ -463,4 +463,43 @@ assert.equal(denied.status, 403, 'hook is transparent: caller still sees the 403
 await new Promise((resolve) => setTimeout(resolve, 10))
 assert.equal(calls, 1, 'installing twice must not double-wrap fetch')
 
+// 7. 会话里的「谁发的」：user-text 规则把 〔@名字〕 切成节点，插槽画成头像 + 昵称
+const authorRule = moduleExports.__test.authorRule
+assert.equal(authorRule.id, moduleExports.__test.AUTHOR_NODE_ID)
+const cut = authorRule.match('〔@访客6105〕\n帮我改标题', 0)
+assert.deepEqual(cut, { id: 'room-author', start: 0, end: '〔@访客6105〕'.length, data: { label: '访客6105' } })
+assert.equal(authorRule.match('帮我改标题', 0), undefined, '普通消息不切节点')
+assert.equal(authorRule.match('〔@阿伟〕\n你好', 7), undefined, '只认开头那一段，避免规则循环')
+assert.ok(authorRule.order < 10, '要排在 session 引用规则之前')
+
+const chip = moduleExports.__test.AuthorChip({ node: { id: 'room-author', data: { label: '访客6105' } } })
+assert.equal(chip.props.className, 'dsh-room-author')
+const chipParts = chip.children.map((child) => child && child.props && child.props.className)
+assert.deepEqual(chipParts, ['dsh-room-authoravatar', 'dsh-room-authorname'])
+assert.equal(chip.children[0].children[0], '05', '默认名取尾号，头像不撞')
+assert.equal(chip.children[1].children[0], '访客6105')
+assert.equal(chip.props.title.includes('访客6105'), true)
+
+// 注册：能拿到 uiConversation 服务就装规则 + 插槽条目；拿不到就安静返回 false
+let authorRuleRegistered = null
+let authorSlot = null
+const authorCtx = {
+  get(name) {
+    if (name !== 'uiConversation') return null
+    return { userText: { register(rule) { authorRuleRegistered = rule } } }
+  },
+  slots: {
+    register(spec, component) {
+      authorSlot = { spec, component }
+      return { spec, component }
+    },
+  },
+}
+assert.equal(moduleExports.__test.installAuthorChip(authorCtx), true)
+assert.equal(authorRuleRegistered, authorRule)
+assert.equal(authorSlot.spec.name, 'conversation.user.text.node')
+assert.equal(authorSlot.spec.key, 'room-author')
+assert.equal(authorSlot.component, moduleExports.__test.AuthorChip)
+assert.equal(moduleExports.__test.installAuthorChip({ get() { return null }, slots: null }), false, '没有服务时安静失败')
+
 console.log('dsh-room client smoke test: PASS')
