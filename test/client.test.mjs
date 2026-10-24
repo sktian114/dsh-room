@@ -632,6 +632,8 @@ function matchSelector(el, selector) {
   const text = selector.trim()
   let m = text.match(/^\[([\w-]+)\*="(.+)"\]$/)
   if (m) return String(el.className || '').indexOf(m[2]) >= 0
+  m = text.match(/^\[([\w-]+)="(.*)"\]$/)
+  if (m) return String(el.attrs[m[1]] === undefined ? '' : el.attrs[m[1]]) === m[2]
   m = text.match(/^\[([\w-]+)\]$/)
   if (m) return Object.prototype.hasOwnProperty.call(el.attrs, m[1])
   m = text.match(/^([a-z]+)$/)
@@ -679,9 +681,21 @@ assert.equal(String(meChip.title).indexOf('小鹿') >= 0, true, '按钮上写着
 
 // 侧栏收起（页脚 0 尺寸）时退回浮动，别把按钮藏在看不见的地方
 footerHolder.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0 })
+// 应用主体也挂一个 0 尺寸的兄弟节点：浮动时绝不能把它标成隐藏，否则整页空白
+const appRoot = domEl('DIV', '')
+appRoot.id = 'root'
+appRoot.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0 })
+bodyEl.appendChild(appRoot)
 profileApi.sweepGuestChrome()
 assert.equal(meChip.parentElement, bodyEl, '页脚不可见时应浮到 body 上')
 assert.equal(meChip.getAttribute('data-floating'), '1')
+assert.equal(appRoot.getAttribute('data-dsh-room-hidden'), null, '浮动时不许把 #root 的一级兄弟标成隐藏（会把整个界面藏掉）')
+assert.equal(bodyEl.getAttribute('data-dsh-room-hidden'), null, 'body 自己也不许被标')
+// 已经误标的要能自己摘掉
+appRoot.setAttribute('data-dsh-room-hidden', '1')
+profileApi.sweepGuestChrome()
+assert.equal(appRoot.getAttribute('data-dsh-room-hidden'), null, '误标在应用主体上的隐藏属性要被摘掉')
+bodyEl.removeChild(appRoot)
 footerHolder.getBoundingClientRect = () => ({ left: 12, top: 700, width: 220, height: 28, bottom: 728, right: 232 })
 profileApi.sweepGuestChrome()
 assert.equal(meChip.parentElement.className, 'xyz_footerActions', '页脚回来后要挪回去')

@@ -413,6 +413,7 @@ Copy-Item -Recurse -Force ".\dsh-room" $dst
 | 房主面板一直“正在读取本机状态” | 重启 DSH；看日志里是否有 `[dsh-room]` 报错 |
 | 访客看到的是自己的界面 | 地址写成了 `127.0.0.1`，改成房主的蒲公英 IP |
 | 装完按钮没出现 | 确认 `node_modules\dsh-room` 存在、patch 已追加、DSH 完全重启 |
+| 访客页**整页空白**、只剩左下角那颗身份按钮 | 0.1.14 修掉的真 bug：侧栏折叠（页脚 0 尺寸）时按钮浮到 `body`，旧逻辑会把 `body` 的子级（含 `#root`）标成隐藏 → 整个界面 `display:none`。刷新即可，新版不会再犯；诊断用 `node test/probe-blank.mjs --profile=<chrome用户目录> --style`，看 `rootStyle.display` 是不是 `none` |
 | 想换端口 | 房主面板停止房间 → 改端口 → 重新创建 |
 
 ---
