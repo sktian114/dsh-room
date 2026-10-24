@@ -41,7 +41,11 @@ assert.equal(store.messagesOf('nope'), null)
 assert.deepEqual(store.post({ from: { kind: 'agent', id: 'session-a', name: 'A' }, text: '偷偷说话' }), { error: 'not-member' })
 const added = store.addAgent(created.group.id, { id: 'session-a', title: '重构助手' })
 assert.equal(added.group.agents.length, 1)
-assert.deepEqual(store.addAgent(created.group.id, { id: 'session-a', title: '重构助手' }), { error: 'already-member' })
+// 重复拉同一个会话是幂等的：不报错、别名不变（「批量拉人抖动」就是重复拉人导致的）
+const addedAgain = store.addAgent(created.group.id, { id: 'session-a', title: '重构助手' })
+assert.equal(addedAgain.already, true)
+assert.equal(addedAgain.agent.alias, added.agent.alias)
+assert.equal(addedAgain.group.agents.length, 1)
 assert.ok(store.isAgentMember(created.group.id, 'session-a'))
 assert.equal(store.isAgentMember('lobby', 'session-a'), false)
 const agentPost = store.post({ groupId: created.group.id, from: { kind: 'agent', id: 'session-a', name: '重构助手' }, text: '我来改' })
@@ -105,6 +109,50 @@ assert.equal(small.sync({ since: 0 }).seq, 80)
   assert.ok(next.message.seq > snapshot.seq, 'seq 接着往上涨，不会撞号')
   assert.equal(revived.restore(null), false, '坏存档不炸')
   assert.equal(revived.restore('乱码'), false, '非对象存档也不炸')
+}
+
+/* ── 10. 唯一别名 + 点名 + 未读游标（「38 个成员都分得清、点名能唤醒」） ── */
+{
+  const room = createChatStore({ now: () => 9000 })
+  const group = room.createGroup({ name: 'agent聊天室' }).group
+  const one = room.addAgent(group.id, { id: 'session-aaa111bb', title: 'dsh space' }).agent
+  const two = room.addAgent(group.id, { id: 'session-aaa222cc', title: 'dsh space' }).agent
+  const three = room.addAgent(group.id, { id: 'session-zzz999', title: '杂项' }).agent
+  assert.notEqual(one.alias, two.alias, '同名会话靠别名区分')
+  assert.ok(one.alias.includes('#'), '别名带会话尾号')
+  const aliases = new Set([one.alias, two.alias, three.alias])
+  assert.equal(aliases.size, 3, '38 个成员都分得清：别名唯一')
+
+  // 点名：@别名 只命中那一个（标题是另一个别名的前缀也不能串）
+  const hitOne = room.post({ groupId: group.id, from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '在吗 @' + two.alias })
+  assert.deepEqual(hitOne.message.mentions, [two.id])
+  const hitTitle = room.post({ groupId: group.id, from: { kind: 'user', id: 'g1', name: '阿伟' }, text: '@杂项 看一下' })
+  assert.deepEqual(hitTitle.message.mentions, [three.id])
+  // 显式 to（房主面板 / 工具参数）也走同一套解析
+  const hitTo = room.post({ groupId: group.id, from: { kind: 'host', id: 'host', name: '房主' }, text: '私聊', to: [three.alias] })
+  assert.deepEqual(hitTo.message.mentions, [three.id])
+  const idle = room.post({ groupId: group.id, from: { kind: 'host', id: 'host' }, text: '大家好' })
+  assert.deepEqual(idle.message.mentions, [])
+
+  // 未读游标：按 (成员, 群) 记，推进后不再算未读
+  assert.equal(room.cursorOf(three.id, group.id), 0)
+  assert.equal(room.pendingFor(three.id, group.id).length, 4, '四条消息都没读')
+  room.setCursor(three.id, group.id, hitTo.message.seq)
+  assert.equal(room.pendingFor(three.id, group.id).length, 1, '游标之后的那条还算未读')
+  room.setCursor(three.id, group.id, idle.message.seq)
+  assert.equal(room.pendingFor(three.id, group.id).length, 0, '推到最新就没有未读了')
+  // 自己说的不算未读
+  room.post({ groupId: group.id, from: { kind: 'agent', id: three.id, name: '杂项' }, text: '我说一句' })
+  assert.equal(room.pendingFor(three.id, group.id).length, 0, '自己说的话不推给自己')
+  assert.equal(room.pendingFor(two.id, group.id).length, 5, '别人看得见')
+
+  // 游标与别名一起存档：重启后不会重复投递、也不会改名
+  const saved = JSON.parse(JSON.stringify(room.snapshot()))
+  const again = createChatStore()
+  assert.equal(again.restore(saved), true)
+  assert.equal(again.cursorOf(three.id, group.id), idle.message.seq, '重启后未读游标还在')
+  const restoredAgents = again.listGroups().find((item) => item.id === group.id).agents
+  assert.deepEqual(restoredAgents.map((item) => item.alias).sort(), [one.alias, two.alias, three.alias].sort())
 }
 
 console.log('dsh-room chat test: PASS')

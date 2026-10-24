@@ -930,6 +930,19 @@ function setup(ctx, config) {
     return { id: 'g' + digest, name: clean }
   }
 
+  /**
+   * 点名参数归一：字符串（逗号/空白分隔）或数组都收。
+   * 工具的 parameters 不使用 array 类型 —— DSH 只支持 JSON Schema 的一个子集，
+   * 参数写错会在**加载期**抛错（历史上就是这种错让整个桌面端起不来）。
+   */
+  function splitTargets(value) {
+    if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean)
+    return String(value || '')
+      .split(/[,，;；\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+
   /** 往群里插一条系统提示（进房 / 离房 / 被拉进群）。系统消息不算「有人说话」。 */
   function systemSay(text, groupId) {
     const body = String(text || '').trim()
@@ -939,7 +952,90 @@ function setup(ctx, config) {
       from: { kind: 'system', id: 'room', name: '系统' },
       text: body,
     })
+    if (result && result.message) deliverChatMessage(groupId || 'lobby', result.message)
     return result && result.message ? result.message : null
+  }
+
+  /* ── 群消息投递（P0）──
+   * 「杂项」2026-10-24 的实测结论：原来的群聊只有拉取，静止的会话永远不知道有人在群里说话，
+   * 一条广播要等 38 个会话各自被唤醒才传播。这里改用 DSH 原生的 agent 句柄投递：
+   *   · agent.inject()   —— 静默落进下一次**被接纳**的步骤，不唤醒、不额外烧额度（默认走这条）
+   *   · agent.followup() —— 排队一轮并唤醒（只有被点名、或房主在面板点「召唤」才用）
+   * 每条消息按成员记未读游标；投递成功才推进，离线/已结束的会话跳过，等它自己 room_chat_read。
+   */
+  const PUSH_ENABLED = (() => {
+    if (config && config.chatPush === false) return false
+    const flag = String(process.env.DSH_ROOM_CHAT_PUSH || '').trim().toLowerCase()
+    return !(flag === '0' || flag === 'off' || flag === 'false' || flag === 'no')
+  })()
+
+  const PUSH_SOURCE = { kind: 'plugin', plugin: '@sktian114/dsh-room' }
+
+  /** 拿 DSH 的 agent 句柄；拿不到（没装 / 服务不在这个上下文 / 会话已结束）返回 null。 */
+  function agentHandleOf(sessionId) {
+    const id = String(sessionId || '')
+    if (!id) return null
+    try {
+      const registry = ctx && ctx.agents
+      if (!registry || typeof registry.get !== 'function') return null
+      return registry.get(id) || null
+    } catch {
+      return null
+    }
+  }
+
+  /** 投递给一个会话的正文：够它判断要不要读、去哪里读、怎么回。 */
+  function pushText(group, message, cursor) {
+    const who = message.from.name || message.from.id || '有人'
+    const tail = message.text.length > 600 ? message.text.slice(0, 600) + '…' : message.text
+    return '【房间消息·' + group.name + '】' + who + '：' + tail
+      + '\n（要看全文：room_chat_read group="' + group.id + '" since=' + cursor
+      + '；要回话：room_chat_post group="' + group.id + '"）'
+  }
+
+  /**
+   * 把一条群消息投递到群里每个在线 agent 的收件箱。
+   * 系统提示（谁进房/离房/被拉进群）不投递：那不是「有人跟你说话」。
+   * @returns {{ delivered: number, woke: number, skipped: number }}
+   */
+  function deliverChatMessage(groupId, message) {
+    const stats = { delivered: 0, woke: 0, skipped: 0 }
+    if (!PUSH_ENABLED || !message) return stats
+    if (message.from && message.from.kind === 'system') return stats
+    const group = chat.group(groupId)
+    if (!group) return stats
+    for (const record of group.agents.values()) {
+      if (record.id === message.from.id) continue          // 自己说的不推给自己
+      const cursor = chat.cursorOf(record.id, groupId)
+      if (message.seq <= cursor) continue                  // 已经读过/推过
+      const handle = agentHandleOf(record.id)
+      if (!handle) { stats.skipped += 1; continue }        // 会话不在了：等它自己 read
+      const mentioned = Array.isArray(message.mentions) && message.mentions.includes(record.id)
+      const payload = { content: [{ type: 'text', text: pushText(group, message, cursor) }], source: PUSH_SOURCE }
+      try {
+        if (mentioned && typeof handle.followup === 'function') {
+          handle.followup(payload)                         // 点名 = 唤醒
+          stats.woke += 1
+        } else if (typeof handle.inject === 'function') {
+          handle.inject(payload)                           // 静默：不唤醒
+          stats.delivered += 1
+        } else {
+          stats.skipped += 1
+          continue
+        }
+      } catch (error) {
+        stats.skipped += 1
+        say('warn', '[' + NAME + '] 群消息投递到 ' + record.id + ' 失败（不影响聊天）：'
+          + (error && error.message ? error.message : error))
+        continue
+      }
+      chat.setCursor(record.id, groupId, message.seq)
+    }
+    if (stats.delivered || stats.woke) {
+      say('debug', '[' + NAME + '] 群消息 #' + message.seq + ' 投递：静默 ' + stats.delivered
+        + ' / 唤醒 ' + stats.woke + ' / 跳过 ' + stats.skipped)
+    }
+    return stats
   }
 
   function publicRoom() {
@@ -1642,16 +1738,20 @@ function setup(ctx, config) {
           return
         }
         const body = (await readJson(req)) || {}
+        const groupId = cleanText(body.group, 64) || 'lobby'
         const result = chat.post({
-          groupId: cleanText(body.group, 64) || 'lobby',
+          groupId,
           from: { kind: who.kind, id: who.id, name: who.name, avatar: who.avatar || '' },
           text: body.text,
+          to: splitTargets(body.to),
         })
         if (result.error) {
           sendJson(res, 400, { ok: false, error: result.error }, cors)
           return
         }
-        sendJson(res, 200, { ok: true, message: result.message }, cors)
+        // 有人说话 → 立刻投递到群里每个在线 agent（静默 inject；被点名的才 followup 唤醒）
+        const pushed = deliverChatMessage(groupId, result.message)
+        sendJson(res, 200, { ok: true, message: result.message, mentions: result.message.mentions || [], pushed }, cors)
         return
       }
 
@@ -1706,14 +1806,66 @@ function setup(ctx, config) {
           sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
           return
         }
+        // 重复拉同一个会话是幂等的：不加成员、不刷系统提示
+        // （「杂项」观测到的「被移出→被拉进」抖动就是重复拉人造成的）。
+        if (result.already) {
+          sendJson(res, 200, { ok: true, already: true, group: result.group, groups: chat.listGroups() }, cors)
+          return
+        }
         // 让群里的人和 agent 看见「谁被拉进来 / 移出去」，而不是成员悄悄变了
         const groupName = (chat.group(groupId) && chat.group(groupId).name) || groupId
         const label = (knownAgent && knownAgent.title)
           || cleanText(body.agentTitle || (body.agent && body.agent.title), 60)
           || agentId
+        if (!body.remove) {
+          // 新成员的未读游标从「入群这一刻」开始算：不会把入群前的旧消息当未读推给它。
+          const target = chat.group(groupId)
+          const lastSeq = target && target.messages.length ? target.messages[target.messages.length - 1].seq : 0
+          if (lastSeq > 0) chat.setCursor(agentId, groupId, lastSeq)
+        }
         systemSay('agent「' + label + '」' + (body.remove ? '被移出了「' : '被拉进了「') + groupName + '」', groupId)
         say('info', '[' + NAME + '] 群成员更新：' + groupId + ' ← ' + agentId)
         sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
+        return
+      }
+
+      // 房主在面板上「召唤」某个 agent：显式 followup 唤醒它（其余情况一律静默，不抢额度）。
+      if (path === PREFIX + '/api/host/chat/wake' && req.method === 'POST') {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, denyBody('host-only'), cors)
+          return
+        }
+        const body = (await readJson(req)) || {}
+        const groupId = cleanText(body.group, 64) || 'lobby'
+        const agentId = cleanText(body.agentId, 128)
+        if (!agentId || !chat.isAgentMember(groupId, agentId)) {
+          sendJson(res, 400, { ok: false, error: 'not-member' }, cors)
+          return
+        }
+        const handle = agentHandleOf(agentId)
+        if (!handle || typeof handle.followup !== 'function') {
+          sendJson(res, 409, { ok: false, error: 'offline' }, cors)
+          return
+        }
+        const group = chat.group(groupId)
+        const cursor = chat.cursorOf(agentId, groupId)
+        try {
+          handle.followup({
+            content: [{
+              type: 'text',
+              text: '【房主召唤】群里有人找你。先 room_chat_read group="' + groupId + '" since=' + cursor
+                + '，读完之后用 room_chat_post 回话。',
+            }],
+            source: PUSH_SOURCE,
+          })
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: 'wake-failed', detail: String((error && error.message) || error) }, cors)
+          return
+        }
+        const lastSeq = group && group.messages.length ? group.messages[group.messages.length - 1].seq : cursor
+        if (lastSeq > 0) chat.setCursor(agentId, groupId, lastSeq)
+        say('info', '[' + NAME + '] 召唤 agent：' + agentId + ' @ ' + groupId)
+        sendJson(res, 200, { ok: true, group: groupId, agentId }, cors)
         return
       }
 
@@ -2003,11 +2155,16 @@ function setup(ctx, config) {
       + '消息里的 fromId 就是说话人身份，system 是房间系统提示（有人进房/离房/被拉进群），不是人说的话。'
       + '回复时请指名道姓（例如「@阿伟」），不要把一个访客说的话当成另一个访客说的话。'
 
+    // seq 口径：它是房间的全局计数器，跨群共享，不能当「群里第几条」做算术。
+    const seqNote = '消息里的 seq 是**房间全局**计数器（跨群共享，不是群内自增），'
+      + '增量同步只能把 since 当「上次读到的 seq」用，不要拿它做加减推条数。'
+      + '看到新消息时：先 room_chat_read 把上下文读全，再决定要不要 room_chat_post 回话。'
+
     const tools = [
       {
         name: 'room_chat_list',
-        description: '列出房间里的聊天群。返回每个群的 id、名字、成员 agent、最后一条消息，以及你自己是否被拉进了这个群。'
-          + '想知道房间里的实时讨论时先调它。' + whoNote,
+        description: '列出房间里的聊天群。返回每个群的 id、名字、成员 agent（带唯一别名）、最后一条消息，'
+          + '你自己是否被拉进了这个群，以及你还有几条没读。想知道房间里的实时讨论时先调它。' + whoNote + seqNote,
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         output: textOutput,
         async execute(_args, exec) {
@@ -2018,10 +2175,11 @@ function setup(ctx, config) {
             groups: chat.listGroups().map((group) => ({
               id: group.id,
               name: group.name,
-              agents: group.agents.map((item) => item.title),
+              agents: group.agents.map((item) => (item.alias ? item.title + ' (' + item.alias + ')' : item.title)),
               lastText: group.lastText,
               lastAt: group.lastAt,
               joined: chat.isAgentMember(group.id, agent.id),
+              unread: chat.isAgentMember(group.id, agent.id) ? chat.pendingFor(agent.id, group.id).length : 0,
             })),
           }
         },
@@ -2059,7 +2217,7 @@ function setup(ctx, config) {
             .map((group) => ({
               id: group.id,
               name: group.name,
-              agents: group.agents.map((item) => ({ id: item.id, title: item.title })),
+              agents: group.agents.map((item) => ({ id: item.id, title: item.title, alias: item.alias || '' })),
             }))
           return {
             ok: true,
@@ -2073,13 +2231,13 @@ function setup(ctx, config) {
       },
       {
         name: 'room_chat_read',
-        description: '读取某个聊天群的消息（只读）。只能读你自己被拉进的群。since 是上次看到的序号，用来只看新消息。'
-          + whoNote,
+        description: '读取某个聊天群的消息（只读）。只能读你自己被拉进的群。since 是上次看到的序号，用来只看新消息；'
+          + '读完会自动把你的未读游标推到最新一条，所以「没读到的」下次不会再重复推给你。' + whoNote + seqNote,
         parameters: {
           type: 'object',
           properties: {
             group: groupParam,
-            since: { type: 'number', description: '只返回序号大于它的消息' },
+            since: { type: 'number', description: '只返回序号大于它的消息；不填就按你的未读游标来' },
             limit: { type: 'number', description: '最多返回多少条，默认 50' },
           },
           required: ['group'],
@@ -2090,10 +2248,17 @@ function setup(ctx, config) {
           const agent = agentInfo(exec)
           const groupId = String((args && args.group) || 'lobby')
           if (!chat.isAgentMember(groupId, agent.id)) return { ok: false, error: 'not-member', group: groupId }
-          const messages = chat.messagesOf(groupId, args && args.since, Math.min(200, Number(args && args.limit) || 50)) || []
+          const explicitSince = args && args.since !== undefined && args.since !== null
+          const since = explicitSince ? Number(args.since) || 0 : chat.cursorOf(agent.id, groupId)
+          const messages = chat.messagesOf(groupId, since, Math.min(200, Number(args && args.limit) || 50)) || []
+          // 读到哪里，游标推进到哪里：投递层不会再把这批消息推给它。
+          const lastSeq = messages.length ? messages[messages.length - 1].seq : since
+          if (lastSeq > 0) chat.setCursor(agent.id, groupId, lastSeq)
           return {
             ok: true,
             group: groupId,
+            since,
+            cursor: chat.cursorOf(agent.id, groupId),
             messages: messages.map((message) => ({
               seq: message.seq,
               at: message.at,
@@ -2101,6 +2266,7 @@ function setup(ctx, config) {
               fromId: message.from.id,
               kind: message.from.kind,
               mine: message.from.kind === 'agent' && message.from.id === agent.id,
+              mentionsMe: Array.isArray(message.mentions) && message.mentions.includes(agent.id),
               text: message.text,
             })),
           }
@@ -2109,12 +2275,19 @@ function setup(ctx, config) {
       {
         name: 'room_chat_post',
         description: '往某个聊天群发一条消息（房间里的房主和访客都能立刻看到）。只能发到你自己被拉进的群。'
-          + '回答完、或做完一个阶段的工作后，用它同步进展。' + whoNote,
+          + '回答完、或做完一个阶段的工作后，用它同步进展。'
+          + '群里其它 agent 会被静默投递到（不唤醒、不烧额度）；'
+          + '只有写明 to（或用 @别名）点名的成员才会被唤醒，所以「要谁动手」就把别名写进 to。'
+          + whoNote + seqNote,
         parameters: {
           type: 'object',
           properties: {
             group: groupParam,
             text: { type: 'string', description: '要发的内容，纯文本，不要超过 2000 字' },
+            to: {
+              type: 'string',
+              description: '可选，点名：要唤醒的成员别名，多个用逗号隔开（例如 "杂项#bb8161,小助手#4c9a1f"）；也可以直接在 text 里写 @别名',
+            },
           },
           required: ['group', 'text'],
           additionalProperties: false,
@@ -2127,9 +2300,11 @@ function setup(ctx, config) {
             groupId,
             from: { kind: 'agent', id: agent.id, name: agent.title },
             text: args && args.text,
+            to: splitTargets(args && args.to),
           })
           if (result.error) return { ok: false, error: result.error, group: groupId }
-          return { ok: true, group: groupId, seq: result.message.seq }
+          const pushed = deliverChatMessage(groupId, result.message)
+          return { ok: true, group: groupId, seq: result.message.seq, mentions: result.message.mentions || [], pushed }
         },
       },
     ]

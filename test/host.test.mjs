@@ -112,6 +112,20 @@ const fakeTools = {
     return () => { registeredTools.delete(name) }
   },
 }
+// 假的 DSH agent 句柄：模拟「哪些会话还活着」，并记录投递到它们收件箱的调用。
+const liveAgents = new Map()
+function makeAgent(id) {
+  const record = { id, calls: [] }
+  record.inject = (payload) => record.calls.push({ how: 'inject', payload })
+  record.followup = (payload) => record.calls.push({ how: 'followup', payload })
+  record.steer = (payload) => record.calls.push({ how: 'steer', payload })
+  return record
+}
+const agentRegistry = {
+  get(id) { return liveAgents.get(String(id)) || undefined },
+  list() { return [...liveAgents.values()] },
+}
+
 const ctx = {
   logger: () => ({ info() {}, warn() {}, error() {} }),
   webServer: {
@@ -122,6 +136,7 @@ const ctx = {
     authenticatedUrl(base) { return base + '/?token=test-token' },
   },
   tools: fakeTools,
+  agents: agentRegistry,
   effect(fn) { dispose = fn() },
   get() { return null },
 }
@@ -462,6 +477,79 @@ assert.ok(
   'adding an agent should leave a system notice in the group',
 )
 
+// 8.7 群消息投递（P0）：新消息静默进 agent 收件箱，点名的才唤醒
+console.log('step: chat-push')
+assert.equal(typeof addAgent.json.group.agents[0].alias, 'string', '每个 agent 要有唯一别名')
+const refactorAgent = makeAgent('session-test')
+liveAgents.set('session-test', refactorAgent)
+const pushSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '给 agent 的活' })
+assert.equal(pushSend.status, 200)
+assert.equal(pushSend.json.pushed.delivered, 1, '在线 agent 应收到一次静默投递')
+assert.equal(pushSend.json.pushed.woke, 0, '没点名就不该唤醒')
+assert.equal(refactorAgent.calls.length, 1)
+assert.equal(refactorAgent.calls[0].how, 'inject', '默认走 inject（不唤醒、不烧额度）')
+const pushedText = refactorAgent.calls[0].payload.content[0].text
+assert.ok(pushedText.includes('给 agent 的活'), '投递正文里要有消息内容')
+assert.ok(pushedText.includes('room_chat_read'), '投递正文要告诉它怎么读')
+assert.equal(refactorAgent.calls[0].payload.source.kind, 'plugin')
+
+// 同一条消息不会重复投递：游标推进后再发新消息只推新的那条
+const secondSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '第二条' })
+assert.equal(secondSend.json.pushed.delivered, 1)
+assert.equal(refactorAgent.calls.length, 2)
+
+// 点名（用别名）→ followup 唤醒，而不是静默 inject
+const alias = addAgent.json.group.agents[0].alias
+const wake = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '来帮忙 @' + alias })
+assert.equal(wake.json.pushed.woke, 1, '点名要唤醒')
+assert.equal(wake.json.mentions.includes('session-test'), true)
+assert.equal(refactorAgent.calls.at(-1).how, 'followup', '点名走 followup')
+
+// 离线会话（注册表里没有）跳过，不影响其它人收到
+liveAgents.delete('session-test')
+const offlineSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '没人在吗' })
+assert.equal(offlineSend.status, 200)
+assert.equal(offlineSend.json.pushed.delivered, 0)
+assert.equal(offlineSend.json.pushed.skipped, 1, '离线会话记为跳过')
+
+// 重复拉同一个会话是幂等的：不报错、不刷系统提示
+const dupAgent = await post('/room/api/host/chat/member', { group: groupId, agentId: 'session-test', agentTitle: '重构助手' }, base)
+assert.equal(dupAgent.status, 200)
+assert.equal(dupAgent.json.already, true)
+
+// 房主「召唤」：显式唤醒；不存在的成员按 not-member 拒绝
+liveAgents.set('session-test', makeAgent('session-test'))
+const woke = await post('/room/api/host/chat/wake', { group: groupId, agentId: 'session-test' }, base)
+assert.equal(woke.status, 200)
+assert.equal(liveAgents.get('session-test').calls.at(-1).how, 'followup', '召唤要唤醒')
+const wakeMissing = await post('/room/api/host/chat/wake', { group: groupId, agentId: 'session-nobody' }, base)
+assert.equal(wakeMissing.status, 400)
+
+// 工具侧：read 会把未读游标推到最新，并把 since 当游标用
+const readDef2 = registeredTools.get('room_chat_read')
+const memberExec = { agent: { session: { id: 'session-test', title: '重构助手' } } }
+const readBack = await readDef2.execute({ group: groupId, since: 0, limit: 50 }, memberExec)
+assert.equal(readBack.ok, true)
+assert.ok(readBack.messages.length > 0)
+assert.equal(readBack.cursor, readBack.messages[readBack.messages.length - 1].seq, '读完游标推到最新')
+const readAgain = await readDef2.execute({ group: groupId }, memberExec)
+assert.equal(readAgain.messages.length, 0, '没有新消息时再读是空的')
+assert.equal(readAgain.since, readBack.cursor)
+// 工具侧点名：to 参数唤醒 + 返回 pushed 统计
+liveAgents.set('session-helper', makeAgent('session-helper'))
+const addHelper = await post('/room/api/host/chat/member', { group: groupId, agentId: 'session-helper', agentTitle: '小助手' }, base)
+const helperAlias = addHelper.json.group.agents.find((item) => item.id === 'session-helper').alias
+const postDef2 = registeredTools.get('room_chat_post')
+const toolPost = await postDef2.execute({ group: groupId, text: '点名了', to: [helperAlias] }, memberExec)
+assert.equal(toolPost.ok, true)
+assert.equal(toolPost.mentions.includes('session-helper'), true)
+assert.equal(toolPost.pushed.woke, 1)
+assert.equal(liveAgents.get('session-helper').calls.at(-1).how, 'followup')
+// 没被拉进群的人读不到
+const outsiderRead = await readDef2.execute({ group: groupId }, { agent: { session: { id: 'session-outsider', title: '局外人' } } })
+assert.equal(outsiderRead.ok, false)
+assert.equal(outsiderRead.error, 'not-member')
+
 // 8.6 房客昵称/头像 + 本地存档：重启后聊天记录与「谁是谁」都还在
 console.log('step: persist')
 const AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -560,7 +648,9 @@ assert.equal(agentPost.ok, true)
 const afterAgent = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=' + groupSendSeq)
 assert.ok(afterAgent.body.messages.some((message) => message.from.kind === 'agent' && message.text === '工具发言'))
 const mineRead = await readDef.execute({ group: groupId, since: 0 }, agentExec)
-assert.equal(mineRead.messages.filter((message) => message.mine).length, 1, 'agent should recognise its own message')
+const ownMessages = mineRead.messages.filter((message) => message.mine)
+assert.ok(ownMessages.length >= 1, 'agent should recognise its own message')
+assert.ok(ownMessages.some((message) => message.text === '工具发言'))
 
 // 同一个名字 + 同一个来源 IP 重连 → 身份 id 不变（聊天记录里的「谁说的」不会断）
 // 注意：重连会换发新令牌、旧令牌作废，所以这条放在所有「用旧令牌」的断言之后。
