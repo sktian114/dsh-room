@@ -667,13 +667,24 @@ globalThis.document = new Proxy(globalThis.document, {
 })
 
 // 房客页：插槽没渲染也能出现按钮（先浮在左下角），侧栏出现后挪进 footerActions
-bodyEl.appendChild(domEl('DIV', 'xyz_footerActions'))
+const footerHolder = domEl('DIV', 'xyz_footerActions')
+footerHolder.getBoundingClientRect = () => ({ left: 12, top: 700, width: 220, height: 28, bottom: 728, right: 232 })
+bodyEl.appendChild(footerHolder)
 profileApi.sweepGuestChrome()   // 有房客记录 → 自动激活
 let meChip = globalThis.document.querySelector('[data-dsh-room-me]')
 assert.ok(meChip, '房客页必须有「我的身份」按钮')
 assert.equal(meChip.parentElement.className, 'xyz_footerActions', '按钮要挂在侧栏页脚里')
 assert.equal(meChip.getAttribute('data-floating'), null, '能挂进页脚就不浮动')
 assert.equal(String(meChip.title).indexOf('小鹿') >= 0, true, '按钮上写着本地昵称')
+
+// 侧栏收起（页脚 0 尺寸）时退回浮动，别把按钮藏在看不见的地方
+footerHolder.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0 })
+profileApi.sweepGuestChrome()
+assert.equal(meChip.parentElement, bodyEl, '页脚不可见时应浮到 body 上')
+assert.equal(meChip.getAttribute('data-floating'), '1')
+footerHolder.getBoundingClientRect = () => ({ left: 12, top: 700, width: 220, height: 28, bottom: 728, right: 232 })
+profileApi.sweepGuestChrome()
+assert.equal(meChip.parentElement.className, 'xyz_footerActions', '页脚回来后要挪回去')
 
 // 点开编辑器：改昵称 + 选头像 → 只写 localStorage
 profileApi.openGuestEditor(meChip)

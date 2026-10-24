@@ -548,9 +548,27 @@ assert.equal(agentPick.body.ok, true)
 assert.ok(Array.isArray(agentPick.body.agents), 'agents should be an array')
 const agentPickGuest = await fetch(roomBase + '/room/api/host/agents', {
   headers: { 'x-forwarded-for': '192.168.1.99' },
+
+
 })
 assert.equal(agentPickGuest.status, 403)
 assert.equal((await agentPickGuest.json()).error, 'host-only')
+
+
+
+// 8.5 访客关掉标签页后要自动过期：把 TTL 调短（运行时读），不再心跳就该被清掉
+console.log('step: member-expiry')
+const ghost = await httpPostJson(roomBase + '/room/api/join', { name: '幽灵访客' })
+assert.equal(ghost.status, 200, '访客能加入')
+const beforeExpiry = await httpGetJson(base + '/room/api/host/state')
+assert.equal(beforeExpiry.body.members.some((m) => m.name === '幽灵访客'), true)
+process.env.DSH_ROOM_MEMBER_TTL = '300'
+await new Promise((resolve) => setTimeout(resolve, 900))
+const afterExpiry = await httpGetJson(base + '/room/api/host/state')
+assert.equal(afterExpiry.body.members.some((m) => m.name === '幽灵访客'), false, '不再动就该过期，不能永远挂着')
+const deadToken = await fetch(roomBase + '/room/api/heartbeat?token=' + encodeURIComponent(ghost.json.token), { method: 'POST' })
+assert.equal(deadToken.status, 401, '过期的令牌也要失效')
+delete process.env.DSH_ROOM_MEMBER_TTL
 
 // 9. 停止（必须是本机直连；房客走代理会被 host-only 拦掉）
 const stopped = await post('/room/api/host/stop', {}, base)

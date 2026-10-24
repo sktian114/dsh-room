@@ -49,7 +49,11 @@ const BODY_LIMIT = 16 * 1024
 // 成员多久没上报就算掉线。手机切到后台后浏览器会把定时器节流到 1 次/分钟甚至
 // 整个冻结，60 秒会在「切出去看个消息」时就把人踢掉；120 秒给足缓冲，
 // 真正离开页面的人靠 leave / 客户端重连兜底。
-const MEMBER_TTL = 120_000
+/** 访客多久没动静就算掉线（可用 DSH_ROOM_MEMBER_TTL 覆盖，测试用）。 */
+function memberTtl() {
+  const custom = Number(process.env.DSH_ROOM_MEMBER_TTL)
+  return Number.isFinite(custom) && custom > 0 ? custom : 120_000
+}
 const MAX_LIST = 200
 // 同一来源 IP 在窗口内最多握几次手。手机浏览器一次刷新就会重新握手（Cookie 被
 // 无痕模式/隐私插件拒绝时更是每次都要），5 次/2 分钟太容易把正常房客挡在门外。
@@ -304,6 +308,9 @@ function rewriteSetCookie(value, inboundProto) {
     cookie = cookie.replace(/;\s*Domain=(?:127\.0\.0\.1|localhost)\b/ig, '')
     // 房客走的是 http（蒲公英内网），Secure cookie 存不下。
     if (inboundProto === 'http') cookie = cookie.replace(/;\s*Secure\b/ig, '')
+    // DSH 发的登录 cookie 带很长的 Max-Age，落到房客浏览器上就是「关掉标签页也永远登录」。
+    // 去掉过期时间让它变会话 cookie：浏览器一关就没，下次还得重新加入房间。
+    cookie = cookie.replace(/;\s*Max-Age=-?\d+/ig, '').replace(/;\s*Expires=[^;]+/ig, '')
     return cookie
   })
 }
@@ -450,6 +457,7 @@ function setup(ctx, config) {
     sockets: new Set(),
   }
   const members = new Map()
+  let memberSweeper = null
   const tokens = new Map()
   const joinAttempts = new Map()
   const handshakes = new Map()
@@ -740,14 +748,26 @@ function setup(ctx, config) {
 
   function prune() {
     const now = Date.now()
+    let removed = 0
     for (const [id, member] of members) {
       if (member.kind === 'host') continue
-      if (now - member.lastSeen > MEMBER_TTL) {
+      if (now - member.lastSeen > memberTtl()) {
         members.delete(id)
         if (member.token) tokens.delete(member.token)
+        removed += 1
         if (room.active) systemSay((member.name || '访客') + ' 掉线离开了房间')
       }
     }
+    return removed
+  }
+
+  /** 后台清扫：房客关掉标签页后没人会再调 prune，否则成员表里永远挂着幽灵房客。 */
+  function startMemberSweeper() {
+    if (memberSweeper) return
+    memberSweeper = setInterval(() => {
+      try { prune() } catch { /* 忽略 */ }
+    }, Math.max(500, Math.min(15_000, Math.round(memberTtl() / 4))))
+    if (memberSweeper && typeof memberSweeper.unref === 'function') memberSweeper.unref()
   }
 
   function memberList() {
@@ -1800,6 +1820,9 @@ function setup(ctx, config) {
 
   say('info', '[' + NAME + '] 就绪：web=' + webPort + '，等待创建房间')
 
+  // 房客关掉标签页后没人会再调 prune，成员表里就会一直挂着幽灵房客。后台定时清扫。
+  startMemberSweeper()
+
   // 房客会话的权限由房主策略钉死：readonly → read-only，write → workspace-write，full → danger-full-access。
   // 房客的 /permission 与 settings(permission) 写入口已在代理层拒绝，这里是纵深防御的第二层。
   const PRESET_FOR_MODE = { readonly: 'read-only', write: 'workspace-write', full: 'danger-full-access' }
@@ -2047,6 +2070,8 @@ function setup(ctx, config) {
 
   return async () => {
     try { if (typeof offRoute === 'function') offRoute() } catch { /* 忽略 */ }
+    try { if (memberSweeper) clearInterval(memberSweeper) } catch { /* 忽略 */ }
+    memberSweeper = null
     await stopRoom()
   }
 }
