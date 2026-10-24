@@ -502,4 +502,39 @@ assert.equal(authorSlot.spec.key, 'room-author')
 assert.equal(authorSlot.component, moduleExports.__test.AuthorChip)
 assert.equal(moduleExports.__test.installAuthorChip({ get() { return null }, slots: null }), false, '没有服务时安静失败')
 
+// 8. 本地发话人也打标（房主直连 DSH，请求不走代理，只能在浏览器里补）
+const mark = moduleExports.__test.markPromptBodyClient
+const bodyOf = (text) => JSON.stringify({
+  type: 'client-request',
+  rpcId: 'r-1',
+  method: 'session/prompt',
+  payload: { args: { request: { sessionId: 's1', mode: 'queue', content: [{ type: 'text', text }] } } },
+})
+const markedBody = JSON.parse(mark(bodyOf('帮我看看这个 bug'), '房主'))
+assert.equal(markedBody.payload.args.request.content[0].text, '〔@房主〕\n帮我看看这个 bug')
+assert.equal(markedBody.rpcId, 'r-1', '信封其它字段不动')
+assert.equal(mark(mark(bodyOf('你好'), '房主'), '房主'), mark(bodyOf('你好'), '房主'), '幂等，不叠加')
+assert.equal(mark('not json', '房主'), 'not json')
+assert.equal(mark(bodyOf('你好'), ''), undefined === undefined ? mark(bodyOf('你好'), '') : '', '空名字也要有个兜底')
+assert.equal(JSON.parse(mark(bodyOf('你好'), '')).payload.args.request.content[0].text, '〔@房主〕\n你好', '空名字回落到「房主」')
+assert.equal(moduleExports.__test.localIdentityName(), '房主', '没加入房间时房主本机就是房主')
+assert.equal(moduleExports.__test.isPromptUrl('/api/session/prompt'), true)
+assert.equal(moduleExports.__test.isPromptUrl('/api/session/list'), false)
+
+// 真的要改写发出去的请求体（Request 字符串体路径）
+globalThis.window.__dshRoomDenyHook = false
+let sentBody = null
+globalThis.window.fetch = function (input, init) {
+  sentBody = init && typeof init.body === 'string' ? init.body : null
+  return Promise.resolve({ status: 200, clone() { return { text: () => Promise.resolve('{}') } } })
+}
+assert.equal(moduleExports.__test.installDenyNotice(), true)
+await globalThis.window.fetch('/api/session/prompt', { method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyOf('改一下标题') })
+assert.ok(sentBody, '请求体还是要发出去')
+assert.equal(JSON.parse(sentBody).payload.args.request.content[0].text, '〔@房主〕\n改一下标题', '发出去的正文必须带身份标记')
+// 非 prompt 请求一个字节都不改
+sentBody = null
+await globalThis.window.fetch('/api/session/list', { method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyOf('不该被改') })
+assert.equal(JSON.parse(sentBody).payload.args.request.content[0].text, '不该被改')
+
 console.log('dsh-room client smoke test: PASS')

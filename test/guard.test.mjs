@@ -233,4 +233,57 @@ for (const [reason, entry] of Object.entries(DENY_REASONS)) {
   assert.ok(entry.message.length >= 12, reason + ' 的说明太短，房客看不懂')
 }
 
+/* ── 8. 权限改小要立刻生效：房客不刷新也不能继续发指令 ── */
+let liveMode = 'write'
+const liveGuard = createGuestGuard({
+  isBlockedPath,
+  modeForPath: (target) => (String(target || '').toLowerCase().startsWith(writeRoot.toLowerCase()) ? liveMode : 'blocked'),
+})
+liveGuard.clientFrame({ type: 'open', streamId: 'w1', endpoint: 'workspace/follow', payload: { args: {} } })
+liveGuard.serverFrame({
+  type: 'item',
+  streamId: 'w1',
+  value: { type: 'baseline', value: { items: [{ workspaceId: 'w-live', path: writeRoot, title: 'live', sessionIds: ['sess-live'] }] } },
+})
+const livePrompt = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/prompt', payload: { args: { request: { sessionId: 'sess-live' } } } })
+assert.equal(liveGuard.judgeBody('/api/session/prompt', livePrompt), null, '可写时能发指令')
+liveMode = 'readonly' // 房主在面板里改成只读
+assert.deepEqual(liveGuard.judgeBody('/api/session/prompt', livePrompt), { deny: 'workspace-readonly' }, '降级后立刻拒绝，不用房客刷新')
+liveMode = 'blocked' // 再改成不开放
+assert.deepEqual(liveGuard.judgeBody('/api/session/prompt', livePrompt), { deny: 'workspace-blocked' })
+liveMode = 'write' // 再放开也立刻恢复
+assert.equal(liveGuard.judgeBody('/api/session/prompt', livePrompt), null)
+
+/* ── 9. 房主账号 / 全局设置 / 插件 / 任意代码执行：房客一律不给 ── */
+const hostOnlyPaths = [
+  '/api/account/signOut',
+  '/api/account/getProfile',
+  '/api/credentials/set',
+  '/api/settings/mutate',
+  '/api/pluginManager/installBundle',
+  '/api/dynamicCordisRunner/invoke',
+  '/api/terminal/create',
+  '/api/directoryPicker/pick',
+  '/api/workspace/delete',
+  '/api/job/kill',
+  '/api/subagents/prompt',
+  '/api/goals/create',
+  '/api/schedule/update',
+  '/api/speech/configure',
+  '/api/userQuestions/answer',
+  '/api/agentPresets/select',
+]
+for (const path of hostOnlyPaths) {
+  assert.equal(guard.judgeRequest(path, 'POST', new URL('http://room.invalid' + path)), 'host-only', path + ' 必须挡住房客')
+}
+// 会话本身照常放行
+assert.equal(guard.judgeRequest('/api/session/prompt', 'POST', new URL('http://room.invalid/api/session/prompt')), 'inspect-body')
+assert.equal(guard.judgeRequest('/api/session/list', 'POST', new URL('http://room.invalid/api/session/list')), null)
+
+/* ── 10. 读文件端点按路径现判：封锁目录不给读，只读目录可以读 ── */
+const readBlocked = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'workspaceFiles/read', payload: { args: { path: blockedRoot + '\\a.txt' } } })
+assert.deepEqual(guard.judgeBody('/api/workspaceFiles/read', readBlocked), { deny: 'workspace-blocked' })
+const readAllowed = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'workspaceFiles/read', payload: { args: { path: allowedRoot + '\\a.txt' } } })
+assert.equal(guard.judgeBody('/api/workspaceFiles/read', readAllowed), null, '只读工作区里的文件可以读')
+
 console.log('dsh-room guard test: PASS')

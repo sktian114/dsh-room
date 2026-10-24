@@ -977,19 +977,60 @@ function setup(ctx, config) {
 
   /* ───────────────────────── 代理 ───────────────────────── */
 
-  // 需要读 body 才能判定的房客端点（与 lib/guard.mjs 的 INSPECT_ENDPOINTS 保持一致）。
-  const INSPECT_BODY_ENDPOINTS = new Set([
-    '/api/session/create',
-    '/api/session/prompt',
-    '/api/session/cancel',
-    '/api/session/updateQueue',
-    '/api/session/rename',
-    '/api/session/fork',
-    '/api/session/selectModel',
-    '/api/session/openWorkspacePath',
-    '/api/commands/execute',
-    '/api/settings/update',
-  ])
+  /* 拒绝房客时，别让 DSH 只显示 "transport failure … HTTP 403"。
+   * DSH 的 RPC 客户端只在 HTTP 2xx 时才解析响应信封，信封形如
+   *   { type: 'server-response', rpcId, result: { ok:false, error:{code,message,details} } }
+   * 而会话界面会把 error.message 原样显示给用户。所以这里把拒绝包装成 200 + 失败信封，
+   * 房客看到的就变成我们要的中文说明（末尾带 room/xxx 便于我们排查）。
+   * 拿不到 rpcId（非 RPC 请求，比如直接抓 /api/file）时退回 403 JSON。 */
+  function sendDenyEnvelope(res, reason, bodyText) {
+    const denial = denyBody(reason)
+    let rpcId = ''
+    if (bodyText) {
+      try {
+        const parsed = JSON.parse(bodyText)
+        if (parsed && typeof parsed.rpcId === 'string') rpcId = parsed.rpcId
+      } catch { /* 不是 RPC 信封 */ }
+    }
+    if (!rpcId) {
+      sendJson(res, 403, denial)
+      return
+    }
+    sendJson(res, 200, {
+      type: 'server-response',
+      rpcId,
+      result: {
+        ok: false,
+        error: {
+          code: denial.code,
+          message: denial.message,
+          details: { reason: denial.error },
+        },
+      },
+    })
+  }
+
+  /** 读一小段请求体（拒绝响应要用里面的 rpcId）；超限就按已读内容处理。 */
+  function readBodyText(req, limit) {
+    return new Promise((resolve) => {
+      const chunks = []
+      let total = 0
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        resolve(Buffer.concat(chunks).toString('utf8'))
+      }
+      req.on('data', (chunk) => {
+        if (done) return
+        total += chunk.length
+        chunks.push(chunk)
+        if (total > limit) { finish(); req.resume() }
+      })
+      req.on('end', finish)
+      req.on('error', finish)
+    })
+  }
 
   function handleProxy(req, res) {
     let pathname = '/'
@@ -1003,15 +1044,19 @@ function setup(ctx, config) {
       return
     }
 
-    // 房客（非 loopback 来源）按工作区策略拦截：审批回答 + 被封锁路径的文件读取。
+    // 房客（非 loopback 来源）按工作区策略拦截：账号/设置/插件禁区、审批回答、被封锁路径。
     const guest = !isLoopback(req.socket.remoteAddress) ? guardFor(req.socket) : null
     if (guest) {
       let requestUrl = null
       try { requestUrl = new URL(String(req.url || '/'), 'http://room.invalid') } catch { requestUrl = null }
       const verdict = requestUrl ? guest.judgeRequest(pathname, req.method, requestUrl) : null
-      if (verdict === 'approval-owner-only' || verdict === 'workspace-blocked') {
-        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(JSON.stringify(denyBody(verdict)))
+      if (verdict && verdict !== 'inspect-body') {
+        // POST 是 RPC 信封，读 body 拿到 rpcId 才能回「能被界面读懂的」失败响应。
+        if (req.method === 'POST') {
+          readBodyText(req, 64 * 1024).then((text) => sendDenyEnvelope(res, verdict, text))
+        } else {
+          sendDenyEnvelope(res, verdict, '')
+        }
         return
       }
     }
@@ -1071,7 +1116,7 @@ function setup(ctx, config) {
 
     // 房客的信封需要先读 body 才能判定（session/create 的落点、/permission 与 settings 改写入口）。
     const inspectBody = Boolean(guest) && req.method === 'POST' &&
-      INSPECT_BODY_ENDPOINTS.has(pathname)
+      guest.inspectEndpoints.has(pathname)
     let pendingCreate = null
 
     const upstream = httpRequest({
@@ -1215,7 +1260,8 @@ function setup(ctx, config) {
         const text = Buffer.concat(chunks).toString('utf8')
         const verdict = guest.judgeBody(pathname, text)
         if (verdict && verdict.deny) {
-          sendJson(res, 403, denyBody(verdict.deny))
+          // 用 200 + 失败信封，房客才会看到中文说明而不是 HTTP 403 的默认报错
+          sendDenyEnvelope(res, verdict.deny, text)
           return
         }
         if (verdict && verdict.create) pendingCreate = verdict.create

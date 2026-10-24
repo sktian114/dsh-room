@@ -1,5 +1,31 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.8 — 2026-10-24
+
+### 拒绝要讲人话 · 权限要立刻生效 · 房客不许碰房主账号 · 房主消息也有头像
+
+- **403 变成中文提示**：DSH 的 RPC 客户端只在 HTTP 2xx 时解析响应信封，非 2xx 直接抛
+  `transport failure … HTTP 403`，所以房客以前只看到那句英文。现在代理把拒绝包装成
+  `200 + {type:'server-response', result:{ok:false, error:{code:'room/readonly', message:'…'}}}`
+  ——会话界面的 promptError 正好把 `error.message` 弹成 toast，房客看到的就是
+  「当前是只读权限（房主设置），不能向 Agent 发送指令……（末尾附带 room/xxx 便于排查）」。
+  拿不到 `rpcId` 的非 RPC 请求（如直接抓 `/api/file`）仍回 403 JSON。
+- **权限改小立刻生效**：以前 `guard` 缓存了「会话 → 权限模式」，房主把可写改回只读后，
+  房客不刷新页面还能继续发指令。现在只缓存「会话 → 工作区路径」，每次判定都按当前策略
+  现算，升级/降级都不用对方刷新。
+- **房客的禁区**：房客是借房主的登录态在操作，所以凡是改房主账号 / 全局设置 / 装插件 /
+  跑任意代码 / 开宿主终端的端点，一律拒绝（`lib/guard.mjs` 的 `HOST_ONLY_ENDPOINTS`）：
+  `account/*`（含退出登录）、`credentials/*`、`settings/*`、`pluginManager/*`、
+  `pluginMarket/*`、`dynamicCordisRunner/*`、`terminal/*`、`directoryPicker/*`、
+  `job/*`、`subagents/*`、`goals/*`、`schedule/*`、`llm/*`、`remoteAccess/*`、
+  `cotTranslation/*`、`officeToPdf/*`、`userQuestions/*`、语音写入类、workspace 变更类、
+  `session/initializeDefaultModel`、`agentPresets/select`。
+- **读文件按路径现判**：`workspaceFiles/{list,read,readBytes,stat,changes}` 现在按目标路径
+  判权限，封锁目录连读都不给（只读目录照常可读）。
+- **房主自己的消息也有头像**：房主直连 DSH，请求不经过代理。改由客户端在发出
+  `session/prompt` 前把 `〔@房主〕` 写进正文（房客页面写自己的名字），代理侧见到已有
+  标记就跳过，两条路不会重复打标。
+
 ## 0.1.7 — 2026-10-24
 
 ### 修掉「会话里看不到身份胶囊」的真因：服务没等到就静默放弃了
