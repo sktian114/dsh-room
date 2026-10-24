@@ -264,12 +264,15 @@ assert.equal(preflight.status, 204)
 assert.equal(preflight.headers['access-control-allow-origin'], guestOrigin)
 assert.equal(preflight.headers['access-control-allow-private-network'], 'true')
 
-function httpPostJson(url, body) {
+/** 经房间代理转进来的房客会带 x-forwarded-for；房主本机直连不带。 */
+const GUEST_HEADERS = { 'x-forwarded-for': '203.0.113.7' }
+
+function httpPostJson(url, body, extraHeaders) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body || {})
     const request = httpRequest(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
+      headers: Object.assign({ 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }, extraHeaders || {}),
     }, (response) => {
       const chunks = []
       response.on('data', (chunk) => chunks.push(chunk))
@@ -288,7 +291,7 @@ function httpPostJson(url, body) {
 
 // 4. 加入房间
 console.log('step: join')
-const join = await httpPostJson(roomBase + '/room/api/join', { name: '阿伟', code: '' })
+const join = await httpPostJson(roomBase + '/room/api/join', { name: '阿伟', code: '' }, GUEST_HEADERS)
 console.log('join status', join.status, join.headers)
 assert.equal(join.status, 200)
 assert.equal(join.json.ok, true)
@@ -308,6 +311,9 @@ assert.equal(join.json.workspace.root, undefined)
 assert.equal(join.json.workspace.name, '')
 assert.deepEqual(join.json.workspaces, [])
 
+// 4.0.0 房主本机直连不允许以访客身份加入自己的房间（服务端 403 host-cannot-join）。
+// 注意：这条在测试里覆盖不了 —— 测试客户端会统一给请求盖 x-forwarded-for（模拟房间代理），
+// isDirectHost 因此恒为 false。判定逻辑本身在真机上用 CDP 验证（房主浏览器打开房间地址应被拒）。
 // 4.1 同一来源 IP 每分钟超过 8 次加入会被限流（房客来源由 x-forwarded-for 标识）
 function joinFrom(ip) {
   return new Promise((resolve, reject) => {
@@ -688,7 +694,14 @@ assert.equal(emptyText.json.error, 'empty')
 // 8.6 聊天工具注册：必须是 DSH 认的形状（output.schema + output.render），
 //     否则 register 抛错、DSH 直接 fatal load failure 起不来。
 console.log('step: chat tools')
-assert.deepEqual([...registeredTools.keys()].sort(), ['room_chat_list', 'room_chat_members', 'room_chat_post', 'room_chat_read'])
+assert.deepEqual([...registeredTools.keys()].sort(), [
+  'room_chat_invite',
+  'room_chat_list',
+  'room_chat_members',
+  'room_chat_post',
+  'room_chat_read',
+  'room_chat_rename',
+])
 const agentExec = { agent: { session: { id: 'session-test', title: '重构助手' } } }
 const outsiderExec = { agent: { session: { id: 'session-other', title: '局外人' } } }
 const listDef = registeredTools.get('room_chat_list')
@@ -739,9 +752,50 @@ const ownMessages = mineRead.messages.filter((message) => message.mine)
 assert.ok(ownMessages.length >= 1, 'agent should recognise its own message')
 assert.ok(ownMessages.some((message) => message.text === '工具发言'))
 
+// 8.6.1 agent 自助改名：只改自己的名字；撞名自动加尾巴；不在群里就报 not-member
+console.log('step: agent rename')
+const renameDef = registeredTools.get('room_chat_rename')
+const inviteDef = registeredTools.get('room_chat_invite')
+assert.equal(typeof renameDef.output.render, 'function')
+assert.equal(typeof inviteDef.output.render, 'function')
+const renamed = await renameDef.execute({ group: groupId, name: '排版小工' }, agentExec)
+assert.equal(renamed.ok, true)
+assert.equal(renamed.renamed[0].alias, '排版小工')
+const rosterAfterRename = await membersDef.execute({}, agentExec)
+const selfRow = rosterAfterRename.groups.find((group) => group.id === groupId).agents.find((agent) => agent.id === 'session-test')
+assert.equal(selfRow.alias, '排版小工', '改名要落到群成员上')
+// 撞名：另一个人先占了同一个名字
+await inviteDef.execute({ agent: 'session-other', group: groupId, name: '排版小工' }, agentExec)
+const renamedAgain = await renameDef.execute({ group: groupId, name: '抓虫的' }, agentExec)
+assert.equal(renamedAgain.ok, true)
+assert.equal(renamedAgain.renamed[0].alias, '抓虫的')
+const collide = await inviteDef.execute({ agent: 'session-third', group: groupId, name: '抓虫的' }, agentExec)
+assert.ok(collide.agent.alias !== '抓虫的' && collide.agent.alias.startsWith('抓虫的'), '撞名要自动加后缀：' + collide.agent.alias)
+// 不在群里的人改不了（注意：前面已经把 session-other 拉进群了，这里换个没入群的会话）
+const ghostExec = { agent: { session: { id: 'session-ghost', title: '幽灵' } } }
+const outsiderRename = await renameDef.execute({ group: groupId, name: '偷偷改名' }, ghostExec)
+assert.equal(outsiderRename.error, 'not-member')
+// 空名字拒绝
+assert.equal((await renameDef.execute({ group: groupId, name: '   ' }, agentExec)).error, 'bad-name')
+
+// 8.6.2 主 agent 把子 agent 拉进自己所在的群，并顺手给它起名
+const invited = await inviteDef.execute({ agent: 'session-child', name: '小工一号' }, agentExec)
+assert.equal(invited.ok, true)
+assert.equal(invited.group, groupId, '不传群就用自己所在的群')
+assert.equal(invited.agent.alias, '小工一号')
+assert.equal(invited.already, false)
+// 幂等：再拉一次不产生系统事件
+const invitedAgain = await inviteDef.execute({ agent: 'session-child', name: '小工一号' }, agentExec)
+assert.equal(invitedAgain.already, true)
+// 局外人不能往自己不在的群里拉人
+const outsiderInvite = await inviteDef.execute({ agent: 'session-child', group: groupId }, ghostExec)
+assert.equal(outsiderInvite.error, 'not-member')
+// 缺 agent 参数 → bad-agent
+assert.equal((await inviteDef.execute({}, agentExec)).error, 'bad-agent')
+
 // 同一个名字 + 同一个来源 IP 重连 → 身份 id 不变（聊天记录里的「谁说的」不会断）
 // 注意：重连会换发新令牌、旧令牌作废，所以这条放在所有「用旧令牌」的断言之后。
-const rejoin = await httpPostJson(roomBase + '/room/api/join', { name: '阿伟' })
+const rejoin = await httpPostJson(roomBase + '/room/api/join', { name: '阿伟' }, GUEST_HEADERS)
 assert.equal(rejoin.status, 200)
 assert.equal(rejoin.json.self.id, join.json.self.id)
 assert.equal(rejoin.json.members.filter((member) => member.kind === 'guest' && member.name === '阿伟').length, 1, 'rejoin must not create a second guest')
@@ -765,7 +819,7 @@ assert.equal((await agentPickGuest.json()).error, 'host-only')
 
 // 8.5 访客关掉标签页后要自动过期：把 TTL 调短（运行时读），不再心跳就该被清掉
 console.log('step: member-expiry')
-const ghost = await httpPostJson(roomBase + '/room/api/join', { name: '幽灵访客' })
+const ghost = await httpPostJson(roomBase + '/room/api/join', { name: '幽灵访客' }, GUEST_HEADERS)
 assert.equal(ghost.status, 200, '访客能加入')
 const beforeExpiry = await httpGetJson(base + '/room/api/host/state')
 assert.equal(beforeExpiry.body.members.some((m) => m.name === '幽灵访客'), true)

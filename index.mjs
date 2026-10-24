@@ -930,10 +930,28 @@ function setup(ctx, config) {
     return record.count > 8
   }
 
-  /** 房主本机直连（不是房间代理转进来的请求）。 */
+  /* 本机所有网卡地址（缓存 60 秒）：房主用浏览器打开自己的局域网地址时，来源不是回环，
+   * 而是本机 LAN IP。只判回环会漏掉这种情况 —— 房主就把自己当成访客加进自己的房间了。 */
+  let localAddressCache = { at: 0, set: new Set() }
+  function localAddresses() {
+    if (Date.now() - localAddressCache.at < 60_000) return localAddressCache.set
+    const set = new Set()
+    try {
+      for (const list of Object.values(networkInterfaces())) {
+        for (const item of list || []) if (item && item.address) set.add(String(item.address).toLowerCase())
+      }
+    } catch { /* 忽略 */ }
+    localAddressCache = { at: Date.now(), set }
+    return set
+  }
+
+  /** 房主本机直连（不是房间代理转进来的请求）：回环，或来自本机自己的某个网卡地址。 */
   function isDirectHost(req) {
     const forwarded = String(req.headers['x-forwarded-for'] || '').trim()
-    return !forwarded && isLoopback(req.socket && req.socket.remoteAddress)
+    if (forwarded) return false
+    const remote = String((req.socket && req.socket.remoteAddress) || '').toLowerCase()
+    if (isLoopback(remote)) return true
+    return localAddresses().has(remote.replace(/^::ffff:/, ''))
   }
 
   /**
@@ -1799,7 +1817,13 @@ function setup(ctx, config) {
           sendJson(res, 403, { ok: false, error: 'bad-code' }, cors)
           return
         }
-        const identity = guestIdentity(body.name, ip)
+        // 房主自己的机器（回环地址）不允许以「访客」身份加入自己的房间：
+        // 那会把自己变成房客页（界面被换成访客版、消息被当成访客发的话），
+        // 还会在成员列表里多出一条「自己」，权限判定也跟着错。房主就是房主。
+        if (isDirectHost(req)) {
+          sendJson(res, 403, { ok: false, error: 'host-cannot-join' }, cors)
+          return
+        }        const identity = guestIdentity(body.name, ip)
         const name = identity.name
         const id = identity.id
         const token = randomBytes(24).toString('hex')
@@ -2326,6 +2350,20 @@ function setup(ctx, config) {
       return { id, title: title || (id ? id.slice(0, 12) : 'agent') }
     }
 
+    /** 会话的标题（给「拉进群」当默认别名用）；拿不到就返回空串。 */
+    async function titleOfAgent(sessionId) {
+      const key = String(sessionId || '')
+      if (!key) return ''
+      try {
+        const handle = await agentHandleOf(key)
+        const session = handle && handle.session
+        const title = session && (session.title
+          || (session.projections && session.projections.values && session.projections.values.title))
+        if (title) return String(title)
+      } catch { /* 忽略 */ }
+      return ''
+    }
+
     // output.schema 必须在 DSH 支持的 JSON Schema 子集内：type/oneOf/properties/
     // required/additionalProperties/items/enum/const + 注释字段。
     const textOutput = {
@@ -2499,6 +2537,73 @@ function setup(ctx, config) {
           return { ok: true, group: groupId, seq: result.message.seq, mentions: result.message.mentions || [], pushed }
         },
       },
+      {
+        name: 'room_chat_rename',
+        description: '改你自己在这个聊天群里显示的名字（别名）：群里其它人和房主看到的就是这个名字，'
+          + '别人也用这个名字 @ 你。别名全房间唯一，撞名会自动加 #尾巴。'
+          + '只想让本群生效就传 group；不传则改你所在的全部群。',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: '新名字，1–48 字（例如 "排版小工"）' },
+            group: { type: 'string', description: '可选，群 id；不传就改你所在的所有群' },
+          },
+          required: ['name'],
+          additionalProperties: false,
+        },
+        output: textOutput,
+        async execute(args, exec) {
+          const agent = agentInfo(exec)
+          const wanted = String((args && args.name) || '').trim()
+          if (!wanted) return { ok: false, error: 'bad-name' }
+          const wantedGroup = String((args && args.group) || '').trim()
+          const targets = wantedGroup
+            ? [wantedGroup]
+            : chat.listGroups().map((item) => item.id).filter((id) => chat.isAgentMember(id, agent.id))
+          const renamed = []
+          for (const id of targets) {
+            const result = chat.renameAgent(id, agent.id, wanted)
+            if (result && result.agent) renamed.push({ group: id, alias: result.agent.alias })
+          }
+          if (!renamed.length) return { ok: false, error: 'not-member', group: wantedGroup || undefined }
+          for (const item of renamed) systemSay(agent.title + ' 改名为 ' + item.alias, item.group)
+          return { ok: true, name: wanted, renamed }
+        },
+      },
+      {
+        name: 'room_chat_invite',
+        description: '把你（或你派出去）的 agent 拉进一个聊天群，并可以顺手给它起个在群里用的名字。'
+          + '发起对话的主 agent 常用它把自己的子 agent 拉进自己所在的群，让子 agent 也能在群里汇报。'
+          + 'agent 参数填子 agent 的会话 id（session-…）；名字不填就沿用它的会话标题。',
+        parameters: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string', description: '要拉进来的 agent 会话 id（session-xxxxxxxx-…）' },
+            group: { type: 'string', description: '可选，群 id；不传就用你自己所在的第一个群' },
+            name: { type: 'string', description: '可选，它在这个群里的名字（别名），1–48 字' },
+          },
+          required: ['agent'],
+          additionalProperties: false,
+        },
+        output: textOutput,
+        async execute(args, exec) {
+          const me = agentInfo(exec)
+          const target = String((args && args.agent) || '').trim()
+          if (!target) return { ok: false, error: 'bad-agent' }
+          const wantedGroup = String((args && args.group) || '').trim()
+          const groupId = wantedGroup
+            || chat.listGroups().map((item) => item.id).find((id) => chat.isAgentMember(id, me.id))
+            || ''
+          if (!groupId) return { ok: false, error: 'no-group' }
+          if (!chat.isAgentMember(groupId, me.id)) return { ok: false, error: 'not-member', group: groupId }
+          const title = await titleOfAgent(target) || target
+          const alias = String((args && args.name) || '').trim()
+          const result = chat.addAgent(groupId, { id: target, title, alias: alias || undefined })
+          if (result.error) return { ok: false, error: result.error, group: groupId }
+          if (!result.already) systemSay(result.agent.alias + ' 被拉进了群', groupId)
+          return { ok: true, group: groupId, agent: result.agent, already: Boolean(result.already) }
+        },
+      },
     ]
 
     const install = (scope, how) => {
@@ -2515,7 +2620,7 @@ function setup(ctx, config) {
       }
       if (registered > 0) {
         say('info', '[' + NAME + '] 已注册房间聊天工具（' + how + '，' + registered + '/' + tools.length
-          + '）：room_chat_list / room_chat_members / room_chat_read / room_chat_post')
+          + '）：room_chat_list / room_chat_members / room_chat_read / room_chat_post / room_chat_rename / room_chat_invite')
       }
       return registered > 0
     }

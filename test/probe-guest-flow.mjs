@@ -28,7 +28,7 @@ function absorb(response) {
 // 1) 加入房间
 const joined = await (await fetch(room + '/room/api/join', {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.9' },
   body: JSON.stringify({ name }),
 })).json()
 console.log('1) join: ok=' + joined.ok + ' token=' + String(joined.token).slice(0, 8) + '…')
@@ -55,7 +55,7 @@ console.log('2) 首页: status=' + pageStatus + ' cookies=' + JSON.stringify([..
 // 3) 拉会话列表（房客的 session/list 由代理改写 + 给守卫补课）
 const listResponse = await fetch(room + '/api/session/list', {
   method: 'POST',
-  headers: { 'content-type': 'application/json', cookie: cookieHeader() },
+  headers: { 'content-type': 'application/json', cookie: cookieHeader(), 'x-forwarded-for': '198.51.100.9' },
   body: JSON.stringify({ type: 'client-request', rpcId: 'r-list-1', method: 'session/list', payload: { args: {} } }),
 })
 absorb(listResponse)

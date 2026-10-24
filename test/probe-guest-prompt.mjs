@@ -20,7 +20,7 @@ const text = args.get('text') || '打标验证消息 ' + Date.now()
 
 const joined = await (await fetch(room + '/room/api/join', {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.9' },
   body: JSON.stringify({ name }),
 })).json()
 if (!joined || !joined.ok) {
@@ -38,7 +38,7 @@ const listBody = {
 }
 const listResponse = await fetch(room + '/api/session/list', {
   method: 'POST',
-  headers: { 'content-type': 'application/json', cookie },
+  headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': '198.51.100.9' },
   body: JSON.stringify(listBody),
 })
 const listText = await listResponse.text()
