@@ -1196,6 +1196,15 @@ function setup(ctx, config) {
       if (outHeaders.location) {
         outHeaders.location = rewriteLocation(outHeaders.location, inboundHost, inboundProto, webPort)
       }
+      // 网页外壳一律不许缓存：DSH 重启/升级后端口和资源指纹都会变，房客浏览器拿着
+      // 上一版 HTML 就会白屏（只剩插件自己注入的按钮）。HTML 走 no-store，资源本身
+      // 带 rev 指纹，重新取 HTML 就能自愈。
+      if (/text\/html/i.test(type)) {
+        outHeaders['cache-control'] = 'no-store, must-revalidate'
+        delete outHeaders.etag
+        delete outHeaders['last-modified']
+        delete outHeaders.expires
+      }
       if (outHeaders['set-cookie']) {
         outHeaders['set-cookie'] = rewriteSetCookie(outHeaders['set-cookie'], inboundProto)
       }
@@ -1324,6 +1333,7 @@ function setup(ctx, config) {
 
     const isMux = String(req.url || '').includes('/api/remote.mux')
     const guestGuard = isMux && !isLoopback(req.socket.remoteAddress) ? guardFor(req.socket) : null
+  let wsmuxDebug = 0
 
     upstream.on('upgrade', (response, upstreamSocket, upstreamHead) => {
       const lines = ['HTTP/1.1 101 Switching Protocols']
@@ -1339,6 +1349,13 @@ function setup(ctx, config) {
           onText(text) {
             let frame
             try { frame = JSON.parse(text) } catch { return undefined }
+            // 头几帧打一份形状，房客页「什么都没有」时靠它定位是哪类帧被清空了。
+            try {
+              if (wsmuxDebug < 12 && process.env.DSH_ROOM_DEBUG_WS) {
+                wsmuxDebug += 1
+                say('info', '[' + NAME + '] WS→房客#' + wsmuxDebug + '：' + String(text).slice(0, 260))
+              }
+            } catch { /* 忽略 */ }
             const next = guestGuard.serverFrame(frame)
             if (!next) return null
             // 过滤器是原地修改，必须重新序列化，否则转发的是旧字节（踩过）。
