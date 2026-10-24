@@ -4,6 +4,9 @@
  * 用法：
  *   node test/probe-run.mjs --url=http://172.16.1.130:8787/ --js=test/probe-author.js [--wait=12000] [--port=9350]
  *
+ * 两段式（先拿 cookie 再去目标页，同一个浏览器进程里 cookie 才在）：
+ *   node test/probe-run.mjs --url=http://127.0.0.1:8787/ --url2=http://127.0.0.1:59740/ --wait=8000 --wait2=14000 --js=...
+ *
  * 只读诊断：不改页面内容（探针脚本自己加的临时节点会自己删掉）。
  */
 import { spawn } from 'node:child_process'
@@ -18,6 +21,8 @@ for (const arg of process.argv.slice(2)) {
   else if (/^--[^=]+$/.test(arg)) args.set(arg.slice(2), '')
 }
 const url = args.get('url') || 'http://172.16.1.130:8787/'
+const url2 = args.get('url2') || ''
+const wait2Ms = Number(args.get('wait2') || 10000)
 const scriptPath = args.get('js') || ''
 const waitMs = Number(args.get('wait') || 12000)
 const port = Number(args.get('port') || 9350)
@@ -83,6 +88,15 @@ function send(method, params) {
 await send('Runtime.enable')
 console.log('[probe] 打开 ' + url + '，等 ' + waitMs + 'ms 让界面起来…')
 await sleep(waitMs)
+
+// 两段式：先用第一段拿到 cookie（房间代理会把启动令牌换成 dsh-auth cookie），
+// 再跳到真正要看的目标页 —— 同一个浏览器进程里 cookie 还在内存里（分两次跑会因为
+// 进程被 kill、cookie 没落盘而丢掉）。
+if (url2) {
+  console.log('[probe] 再跳到 ' + url2 + '，等 ' + wait2Ms + 'ms…')
+  await send('Page.navigate', { url: url2 })
+  await sleep(wait2Ms)
+}
 
 const body = scriptPath ? readFileSync(scriptPath, 'utf8') : 'JSON.stringify({ok:true})'
 const result = await send('Runtime.evaluate', {

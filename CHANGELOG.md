@@ -13,6 +13,22 @@
   别名回到会话标题。
 - `knownAgentIds()` 同时认 `{ session: { id } }`（真 DSH 句柄）与 `{ id }`（测试替身）两种形状。
 - 测试：host 套件补 `unknown-agent` 用例（糊假 id 必须拒绝）。
+
+### 真机验证记录（0.3.8 装载后跑的）
+- `GET /room/api/ping` → `version:"0.3.8"`：重载用 `pluginManager/setBundleEnabled`（profile bundle 用目录名
+  `dsh-room`，用包名会 `cannot resolve profile bundle`），关→开一次即可触发重新组合。
+- **房主加入自己被拒**：`POST /room/api/join` 从 `127.0.0.1` 与 `172.16.1.130` 都是 `403 {"ok":false,"error":"host-cannot-join"}`；
+  带 `x-forwarded-for` 的真房客仍然 `200` 并拿到令牌。
+- **新工具**：全新会话里 `room_chat_rename` / `room_chat_invite` 都在；
+  · 拉子 agent 进群 → 别名 `小工一号`；它自己改名为 `验收二号` → 成员列表跟着变；
+  · 糊出来的 `session-00000000-…` → `unknown-agent`；已在群里 → `already:true`；
+  · 不传 name 拉一条真实会话 → 别名取自会话标题（`你好，我想要和你玩一个文字#a811ab`），不再是 session id。
+- 意外收获（「杂项」实测）：**插件重载后，重载前创建的会话也立刻能看到新工具** —— 加工具不必让房主重建会话。
+- **胶囊位置**（真实对话 DOM）：新增 `test/probe-chip-realtranscript.js`，在真实会话里找到一条真实消息，
+  在正文开头塞一个胶囊再跑 `promoteAuthorChips()` → 胶囊被搬到那条消息**上方独立一行**
+  （`chipInLine:true` / `lineIsSiblingAboveMessage:true` / `chipStillInBubble:false`），正文完好，重复跑行数不变。
+- 附带说明：本机已无法再模拟「房客加入自己房间」这条路径（被 0.3.7 的闸挡住了），所以真实房客页的胶囊样本
+  只能在别的机器上看；上面的真实 DOM 验证用「种一个胶囊」代替了房客打标那一步。
 ## 0.3.7 — 2026-10-24
 
 ### 房主不能把自己当访客加进自己的房间 + 胶囊挪到气泡外面 + agent 能自己改名/拉子 agent 进群
