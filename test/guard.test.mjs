@@ -3,7 +3,7 @@
  *   node test/guard.test.mjs
  */
 import { strict as assert } from 'node:assert'
-import { createGuestGuard } from '../lib/guard.mjs'
+import { createGuestGuard, tokenFromCookie } from '../lib/guard.mjs'
 import { createFrameTransformer } from '../lib/frames.mjs'
 import { DENY_REASONS, denyBody } from '../lib/deny.mjs'
 
@@ -99,7 +99,7 @@ assert.deepEqual(guard.judgeBody('/api/session/create', createBody), { deny: 'wo
 const createOk = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/create', payload: { args: { request: { cwd: allowedRoot } } } })
 assert.deepEqual(guard.judgeBody('/api/session/create', createOk), { deny: 'workspace-readonly' })
 const createWritable = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/create', payload: { args: { request: { cwd: writeRoot } } } })
-assert.deepEqual(guard.judgeBody('/api/session/create', createWritable), { create: { mode: 'write' } })
+assert.deepEqual(guard.judgeBody('/api/session/create', createWritable), { create: { mode: 'write', path: writeRoot } })
 // 没有 cwd、工作区 id 也不认识 → 拒绝（不猜默认工作区）
 const createUnknown = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/create', payload: { args: { request: { workspaceId: 'nope' } } } })
 assert.deepEqual(guard.judgeBody('/api/session/create', createUnknown), { deny: 'workspace-blocked' })
@@ -285,5 +285,31 @@ const readBlocked = JSON.stringify({ type: 'client-request', rpcId: 'r1', method
 assert.deepEqual(guard.judgeBody('/api/workspaceFiles/read', readBlocked), { deny: 'workspace-blocked' })
 const readAllowed = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'workspaceFiles/read', payload: { args: { path: allowedRoot + '\\a.txt' } } })
 assert.equal(guard.judgeBody('/api/workspaceFiles/read', readAllowed), null, '只读工作区里的文件可以读')
+
+/* ── 11. 从 Cookie 头认出房客令牌（会话里「谁说的」标记靠它） ── */
+assert.equal(tokenFromCookie('dsh_room_token=abc123', 'dsh_room_token'), 'abc123')
+assert.equal(tokenFromCookie('a=1; dsh_room_token=abc123; b=2', 'dsh_room_token'), 'abc123')
+assert.equal(tokenFromCookie('dsh_room_token=abc123; dsh_room_token=zzz', 'dsh_room_token'), 'abc123', '同名的取第一个')
+assert.equal(tokenFromCookie('', 'dsh_room_token'), '')
+assert.equal(tokenFromCookie('noequals', 'dsh_room_token'), '')
+assert.equal(tokenFromCookie('other=1', 'dsh_room_token'), '')
+assert.equal(tokenFromCookie(null, 'dsh_room_token'), '')
+assert.equal(tokenFromCookie('dsh_room_token=abc', ''), '')
+
+/* ── 12. 会话列表回执 → 记住「会话属于哪个工作区」，房客的指令才不会被误拦 ── */
+const freshGuard12 = createGuestGuard({ isBlockedPath, modeForPath })
+const listBody12 = JSON.stringify({ result: { value: { items: [
+  { sessionId: 's-write', cwd: writeRoot },
+  { sessionId: 's-blocked', cwd: blockedRoot },
+] } } })
+const filteredList12 = JSON.parse(freshGuard12.filterResponse('/api/session/list', listBody12))
+assert.equal(filteredList12.result.value.items.length, 1, '封锁工作区的会话要从列表里滤掉')
+const promptInWrite12 = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/prompt', payload: { args: { request: { sessionId: 's-write', content: [{ type: 'text', text: 'hi' }] } } } })
+assert.equal(freshGuard12.judgeBody('/api/session/prompt', promptInWrite12), null, '记住工作区后房客的指令要放行')
+const promptInSecret12 = JSON.stringify({ type: 'client-request', rpcId: 'r2', method: 'session/prompt', payload: { args: { request: { sessionId: 's-blocked', content: [{ type: 'text', text: 'hi' }] } } } })
+assert.deepEqual(freshGuard12.judgeBody('/api/session/prompt', promptInSecret12), { deny: 'workspace-blocked' }, '封锁工作区里的会话仍然要拦')
+// 连 WS 都没见过的会话（映射为空）依然按「不可判」拒绝，不猜
+const promptUnknown12 = JSON.stringify({ type: 'client-request', rpcId: 'r3', method: 'session/prompt', payload: { args: { request: { sessionId: 's-never-seen', content: [{ type: 'text', text: 'hi' }] } } } })
+assert.deepEqual(freshGuard12.judgeBody('/api/session/prompt', promptUnknown12), { deny: 'workspace-blocked' })
 
 console.log('dsh-room guard test: PASS')

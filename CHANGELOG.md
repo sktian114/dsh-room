@@ -1,5 +1,33 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.4 — 2026-10-24
+
+### 会话里的「头像 + 昵称胶囊」终于能显示了（根因：作者标记从来没打上）+ 房客发指令被误拦
+
+用 CDP 在真实页面上一路查到根因，三个叠在一起的问题：
+
+1. **DSH 0.2.1-rc.3 发 prompt 用的是相对地址 `api/session/prompt`（没有前导斜杠）**，
+   而客户端 hook 判断的是 `indexOf("/api/session/prompt") >= 0` → 永远 -1，
+   **标记一次都没打过**。胶囊不显示不是渲染问题，是正文里根本没有 `〔@名字〕`。
+   改成 `/(^|\/)api\/session\/prompt(\?|#|$)/`，两种写法都认（403 拒绝提示的 `/api/` 判断同样修）。
+2. **代理侧也认不出人**：`authMember()` 只看 URL 上的 `token` / `Authorization` / `x-room-token`，
+   而房客页打 `/api/*` 时一样都不带 → 代理这边也没法打标。
+   现在 `/room/api/join` 会顺手下发 `dsh_room_token` cookie（HttpOnly 不需要，SameSite=Lax，7 天），
+   `authMember()` 增加 cookie 兜底；解析逻辑抽成纯函数 `tokenFromCookie()`（lib/guard.mjs，有单测）。
+3. **房客的指令被误判成 `workspace-blocked`**：守卫判断 `session/prompt` 要看「这条会话属于哪个工作区」，
+   那份映射以前只从 WS 的 workspace 帧里学。结果是
+   · 只走 HTTP 的场景（以及刚建好的新会话）一直判不出工作区 → 房客发什么都没反应；
+   · `session/create` 回执里传的是**模式**而不是**路径**，`rememberSessionMode()` 明确忽略模式值 → 白记。
+   现在 `session/list` 回执会把 `会话 → cwd` 记进守卫，`judgeBody('/api/session/create')` 连路径一起返回，
+   宿主按路径登记。房客于是能在房主开放的工作区里正常发指令。
+
+- 顺带把地址标签、文案统一成「虚拟内网」的收尾（见 0.3.1）做完；未联动任何具体组网产品。
+- 测试：`npm test` 六套全绿。新增覆盖 —— `tokenFromCookie()` 的七种畸形输入、
+  `session/list` 记住工作区后 `session/prompt` 放行 / 封锁工作区仍拦 / 从没见过的会话仍拒、
+  `session/create` 回执带路径、加入房间下发 cookie。
+- 真机验证（CDP，房客页）：注入一段 `〔@小鹿〕…` 后 DOM 兜底把标记原地换成胶囊
+  `<span class="dsh-room-author">`（头像缩写 + 昵称，`title="这条指令来自：小鹿"`）。
+
 ## 0.3.3 — 2026-10-24
 
 ### 点名的会话没在跑 = 唤不醒 —— 补上「先恢复会话再唤醒」

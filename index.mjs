@@ -29,7 +29,7 @@ import { networkInterfaces, hostname, homedir } from 'node:os'
 import { readFileSync, writeFileSync, statSync, readdirSync, mkdirSync } from 'node:fs'
 import { join, resolve, sep, basename, dirname } from 'node:path'
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
-import { createGuestGuard } from './lib/guard.mjs'
+import { createGuestGuard, tokenFromCookie } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
 import { denyBody } from './lib/deny.mjs'
@@ -45,6 +45,9 @@ const VERSION = (() => {
   }
 })()
 const PREFIX = '/room'
+// 房客浏览器的房间令牌 cookie：房客页打 /api/*（例如 session/prompt）时唯一能带上的身份，
+// 用来给会话里的指令打「谁说的」标记（见 authMember / markPromptBody 那段）。
+const ROOM_COOKIE = 'dsh_room_token'
 const DEFAULT_PORT = 8787
 const BODY_LIMIT = 16 * 1024
 // 成员多久没上报就算掉线。手机切到后台后浏览器会把定时器节流到 1 次/分钟甚至
@@ -866,10 +869,17 @@ function setup(ctx, config) {
     return member
   }
 
+  /** 读 cookie 里的房间令牌（房客浏览器打 /api/* 时唯一的身份来源）。 */
+  function roomCookieToken(req) {
+    return tokenFromCookie(req.headers && req.headers.cookie, ROOM_COOKIE)
+  }
+
   function authMember(req, url) {
     const header = String(req.headers.authorization || '')
     const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
-    const token = url.searchParams.get('token') || bearer || String(req.headers['x-room-token'] || '')
+    // cookie 是给「打 /api/* 的房客请求」用的：DSH 自己的界面不带我们的令牌参数，
+    // 只有 cookie 会跟着每一个同源请求走。
+    const token = url.searchParams.get('token') || bearer || String(req.headers['x-room-token'] || '') || roomCookieToken(req)
     if (!token) return null
     if (room.active && room.hostToken && safeEqual(token, room.hostToken)) {
       return { id: 'host', name: cfg.name || '房主', kind: 'host', isHostToken: true }
@@ -1494,7 +1504,9 @@ function setup(ctx, config) {
             const sessionId = value && value.sessionId
             if (sessionId && pendingCreate) {
               guestSessions.set(String(sessionId), { mode: pendingCreate.mode })
-              guest.rememberSessionMode(String(sessionId), pendingCreate.mode)
+              // 传工作区**路径**：守卫只认路径（传模式会被 rememberSessionMode 忽略），
+              // 不然房客刚建好的会话马上发指令会被误判成 workspace-blocked。
+              guest.rememberSessionMode(String(sessionId), pendingCreate.path || pendingCreate.mode)
             }
           } catch { /* 忽略 */ }
           delete outHeaders['content-encoding']
@@ -1755,6 +1767,11 @@ function setup(ctx, config) {
         // 只有「新面孔」才播报；同一个人断线重连（id 没变）不刷屏。
         if (!previous) systemSay(name + ' 加入了房间')
         saveRoomStore()
+        // 顺手把这个令牌钉进 cookie：房客浏览器之后打到 /api/*（比如 session/prompt）时
+        // 房间才能认出「这条指令是谁发的」，见 authMember() 与 markPromptBody 那段。
+        try {
+          res.setHeader('set-cookie', ROOM_COOKIE + '=' + token + '; Path=/; SameSite=Lax; Max-Age=604800')
+        } catch { /* 忽略 */ }
         sendJson(res, 200, {
           ok: true,
           token,

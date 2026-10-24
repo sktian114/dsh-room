@@ -50,6 +50,7 @@ function listen(server) {
 
 let route = null
 const seen = []
+const promptBodies = []
 const fake = createServer((req, res) => {
   const url = new URL(req.url, 'http://x')
   if (url.pathname === '/room' || url.pathname.startsWith('/room/')) {
@@ -69,6 +70,21 @@ const fake = createServer((req, res) => {
     }
     res.writeHead(401, { 'content-type': 'text/plain' })
     res.end('unauthorized')
+    return
+  }
+  if (url.pathname === '/api/session/prompt') {
+    // 代理转发上去的 prompt 正文：房客的指令到底有没有打「谁说的」标记，就看这里。
+    const chunks = []
+    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('end', () => {
+      promptBodies.push({
+        body: Buffer.concat(chunks).toString('utf8'),
+        cookie: String(req.headers.cookie || ''),
+        token: url.searchParams.get('token') || '',
+      })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { ok: true } }))
+    })
     return
   }
   if (url.pathname === '/api/echo') {
@@ -279,6 +295,11 @@ assert.equal(join.json.ok, true)
 assert.ok(join.json.token)
 assert.equal(join.json.room.name, '测试房')
 assert.equal(join.json.members.length >= 1, true)
+// 4.0 加入时下发房间令牌 cookie：房客页打 /api/session/prompt 时只有 cookie 能带上身份，
+//     会话里的「谁说的」标记就靠它（见 4.9）。
+const joinCookie = String(join.headers['set-cookie'] || '')
+assert.match(joinCookie, /dsh_room_token=/)
+assert.match(joinCookie, new RegExp('dsh_room_token=' + join.json.token))
 // 4.0 默认封锁：房客响应里不能出现任何工作区目录名 / 路径
 assert.equal(join.json.room.workspace, '')
 assert.equal(join.json.room.workspaceMode, 'blocked')
