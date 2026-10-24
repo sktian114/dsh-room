@@ -138,7 +138,7 @@ const runningHost = {
   running: true,
   room: { id: 'r1', name: '老王的开发间', port: 8787, code: '1234', needsCode: true, startedAt: Date.now() - 720000, workspace: 'E:\\E Download\\AIWorking\\dsh space' },
   urls: [
-    { url: 'http://172.16.1.130:8787', label: '蒲公英' },
+    { url: 'http://172.16.1.130:8787', label: '虚拟内网' },
     { url: 'http://192.168.1.5:8787', label: '局域网' },
   ],
   members,
@@ -203,7 +203,7 @@ function shell(inner, tab) {
   return '<div class="dsh-room-panel preview-panel">'
     + '<div class="dsh-room-head"><div class="dsh-room-heading">'
     + '<div class="dsh-room-title">房间联机</div>'
-    + '<div class="dsh-room-sub">蒲公英组网 · 共享同一个 DSH 工作区</div></div>'
+    + '<div class="dsh-room-sub">同一网络内共享同一个 DSH 工作区</div></div>'
     + '<button class="dsh-room-iconbtn" aria-label="关闭">' + icon('x', 14, 1.8) + '</button></div>'
     + '<div class="dsh-room-tabs" role="tablist" style="--tab-index:' + (tab === 'host' ? 0 : 1) + '">'
     + '<span class="dsh-room-tab-indicator" aria-hidden="true"></span>'

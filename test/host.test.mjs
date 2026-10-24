@@ -161,6 +161,12 @@ const started = await post('/room/api/host/start', { port: ROOM_PORT, name: '测
 assert.equal(started.status, 200, 'start status ' + started.status)
 assert.equal(started.json.ok, true)
 assert.equal(started.json.room.port, ROOM_PORT)
+// 地址标签只用「虚拟内网 / 局域网 / WARP / 虚拟网卡」这几种通用说法，不绑定任何具体组网产品。
+assert.ok(Array.isArray(started.json.urls), 'start 要给出可加入的地址')
+for (const item of started.json.urls) {
+  assert.ok(['虚拟内网', '局域网', 'WARP', '虚拟网卡'].includes(item.label), '地址标签要用通用说法：' + item.label)
+  assert.equal(/蒲公英|oray|pgy/i.test(item.label), false, '标签里不能出现具体产品名')
+}
 
 // 0. 默认策略：工作区全部封锁，房主端能看到策略，房客端连目录名都看不到
 console.log('step: policy-default')
@@ -549,6 +555,15 @@ assert.equal(liveAgents.get('session-helper').calls.at(-1).how, 'followup')
 const outsiderRead = await readDef2.execute({ group: groupId }, { agent: { session: { id: 'session-outsider', title: '局外人' } } })
 assert.equal(outsiderRead.ok, false)
 assert.equal(outsiderRead.error, 'not-member')
+
+// 注册表只认内部 id 形态、get() 取不到时，靠 list() 兜住（不能「明明在跑却说会话不在」）
+liveAgents.set('session-test', makeAgent('session-test'))
+const realGet = agentRegistry.get
+agentRegistry.get = () => undefined
+const viaList = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: 'get 取不到也要能投' })
+assert.equal(viaList.json.pushed.skipped, 0, 'get 落空时要按 list 兜住')
+assert.ok(viaList.json.pushed.delivered + viaList.json.pushed.woke >= 1)
+agentRegistry.get = realGet
 
 // 8.6 房客昵称/头像 + 本地存档：重启后聊天记录与「谁是谁」都还在
 console.log('step: persist')

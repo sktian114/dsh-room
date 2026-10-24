@@ -129,7 +129,7 @@ const hostViewTexts = texts(view.HostView({
   host: {
     running: true,
     room: { name: '老王的开发间', port: 8787, needsCode: true, code: '1234', workspace: 'E:\\proj' },
-    urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '蒲公英' }],
+    urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '虚拟内网' }],
     members,
     hostToken: 'abc',
     policy: { defaultMode: 'blocked', entries: [] },
@@ -339,7 +339,7 @@ const hostRunningPicker = view.HostView({
   host: {
     running: true,
     room: { name: '老王的开发间', port: 8787, needsCode: false, code: '', workspace: 'E:\\proj' },
-    urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '蒲公英' }],
+    urls: [{ url: 'http://172.16.1.130:8787', ip: '172.16.1.130', label: '虚拟内网' }],
     members,
     hostToken: 'abc',
     policy: { defaultMode: 'blocked', entries: [] },

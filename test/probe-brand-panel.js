@@ -26,7 +26,7 @@
     brandSize: rect ? Math.round(rect.width) + 'x' + Math.round(rect.height) : 'n/a',
     brandIdentityVisible: brandIdentity ? !(getComputedStyle(brandIdentity).display === 'none') : 'missing',
     hiddenList: hidden,
-    subtitle: (String(document.body.innerText).match(/同一网络内共享同一个 DSH 工作区|蒲公英组网/) || ['(无)'])[0],
+    subtitle: (String(document.body.innerText).match(/同一网络内共享同一个 DSH 工作区/) || ['(无)'])[0],
     panel,
     texture: String(document.body.innerText).replace(/\s+/g, ' ').slice(0, 160),
   };

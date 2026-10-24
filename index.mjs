@@ -1,8 +1,8 @@
 /**
  * dsh-room —— 房间联机（宿主半边）
  *
- * 目标：在「两台机器已经连在同一个网络里」之后（同一局域网，或 ZeroTier / Tailscale /
- * 蒲公英这类组网工具搭出来的虚拟局域网，插件不绑定其中任何一个），
+ * 目标：在「两台机器已经连在同一个网络里」之后（同一局域网，或用任意虚拟内网工具
+ * 把两台机器放进同一个网段——插件不绑定任何具体产品），
  * 房客只要在 DSH 面板里输入 `172.16.1.130:8787`，就能进入房主的房间：
  *   · 看到房间成员
  *   · 展开房主工作区的文件 / 程序列表
@@ -198,20 +198,19 @@ function urlsFor(port) {
       const ip = String(addr.address || '')
       if (!ip || ip.startsWith('127.') || ip.startsWith('169.254.')) continue
       const iface = String(name || '')
-      // 排序原则：蒲公英 > 其它虚拟局域网 > 172.16/12 内网 > 物理局域网 > WARP/容器网卡。
+      // 排序原则：虚拟内网 > 172.16/12 内网 > 物理局域网 > WARP/容器网卡。
       // WARP 的 172.16.x 地址对朋友通常不可达，必须排到后面，避免被误发。
-      const pgy = /pgy|oray|蒲公英|sunlogin|花生壳/i.test(iface)
+      // 网卡名只用来「认出这是虚拟内网」，不绑定任何具体产品。
+      const virtualLan = /tailscale|zerotier|radmin|hamachi|vpn|tun|tap|utun/i.test(iface)
       const warp = /warp|cloudflare/i.test(iface)
       const container = /docker|veth|wsl|vmware|virtualbox|vEthernet|hyper-v/i.test(iface)
-      const virtualLan = /tailscale|zerotier|radmin|hamachi|vpn|tun|tap|utun/i.test(iface)
       const cgnat = /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
       let label = '局域网'
       let priority = 3
-      if (pgy) { label = '蒲公英'; priority = 0 }
-      else if (warp) { label = 'WARP'; priority = 5 }
+      if (warp) { label = 'WARP'; priority = 5 }
       else if (container) { label = '虚拟网卡'; priority = 6 }
-      else if (virtualLan) { label = '虚拟局域网'; priority = 1 }
-      else if (cgnat) { label = '蒲公英/虚拟内网'; priority = 2 }
+      else if (virtualLan) { label = '虚拟内网'; priority = 1 }
+      else if (cgnat) { label = '虚拟内网'; priority = 2 }
       out.push({ ip, iface, url: 'http://' + ip + ':' + port, label, priority })
     }
   }
@@ -317,7 +316,7 @@ function rewriteSetCookie(value, inboundProto) {
     let cookie = String(raw)
     // 上游以为自己在 loopback 上：把 loopback 的 Domain 去掉，变成房客主机的 host-only cookie。
     cookie = cookie.replace(/;\s*Domain=(?:127\.0\.0\.1|localhost)\b/ig, '')
-    // 房客走的是 http（蒲公英内网），Secure cookie 存不下。
+    // 房客走的是 http（虚拟内网地址），Secure cookie 存不下。
     if (inboundProto === 'http') cookie = cookie.replace(/;\s*Secure\b/ig, '')
     // DSH 发的登录 cookie 带很长的 Max-Age，落到房客浏览器上就是「关掉标签页也永远登录」。
     // 去掉过期时间让它变会话 cookie：浏览器一关就没，下次还得重新加入房间。
@@ -971,14 +970,46 @@ function setup(ctx, config) {
 
   const PUSH_SOURCE = { kind: 'plugin', plugin: '@sktian114/dsh-room' }
 
+  // `agents` 是 @deepseek-ai/dsh-agent-loop 提供的服务，不在本插件的 inject 声明里
+  // （缺了也不该让房间起不来），所以用 scoped inject 主动拿一次，拿不到就退化成「只投递、找不到就跳过」。
+  let agentsRegistry = null
+  try {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['agents'], (scoped) => {
+        if (scoped && scoped.agents) agentsRegistry = scoped.agents
+        say('info', '[' + NAME + '] 拿到 agent 句柄服务：群消息可以直接投递到会话收件箱')
+      })
+    }
+  } catch (error) {
+    say('warn', '[' + NAME + '] 拿不到 agent 服务（群消息只读不推）：'
+      + (error && error.message ? error.message : error))
+  }
+
   /** 拿 DSH 的 agent 句柄；拿不到（没装 / 服务不在这个上下文 / 会话已结束）返回 null。 */
   function agentHandleOf(sessionId) {
     const id = String(sessionId || '')
     if (!id) return null
     try {
-      const registry = ctx && ctx.agents
+      // 三条来路都试：注入的 scoped ctx（最可靠）、ctx.agents、ctx.get('agents')。
+      // 注意 `agents` 没写进本插件的 inject 声明（它是 dsh-agent-loop 提供的服务，
+      // 缺了也不该让房间起不来），所以这里全程防御式取用。
+      const registry = agentsRegistry
+        || (ctx && ctx.agents)
+        || (typeof ctx.get === 'function' ? ctx.get('agents') : null)
       if (!registry || typeof registry.get !== 'function') return null
-      return registry.get(id) || null
+      const direct = registry.get(id)
+      if (direct) return direct
+      // get() 认的是内部 id 形态时（字符串 / SessionId 品牌对象）可能取不到，
+      // 再按 list() 里的 id / sessionId 兜一次，避免「明明在跑却说会话不在」。
+      if (typeof registry.list === 'function') {
+        const items = registry.list() || []
+        for (const item of items) {
+          if (!item) continue
+          const keys = [item.id, item.sessionId, item.session && item.session.id]
+          if (keys.some((key) => key && String(key) === id)) return item
+        }
+      }
+      return null
     } catch {
       return null
     }
@@ -1612,6 +1643,9 @@ function setup(ctx, config) {
           needsCode: room.active ? Boolean(room.code) : false,
           port: room.active ? room.port : 0,
           host: hostname(),
+          // 自检用：群消息投递到底有没有接上 agent 句柄服务。
+          chatPush: PUSH_ENABLED,
+          agentService: Boolean(agentsRegistry || (ctx && ctx.agents)),
         }, cors)
         return
       }
