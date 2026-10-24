@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { zstdCompressSync } from 'node:zlib'
-import { promptSessionId, cwdFromSessionFile, dshHome } from '../lib/sessioninfo.mjs'
+import { promptSessionId, cwdFromSessionFile, dshHome, titleFromProjectionCache } from '../lib/sessioninfo.mjs'
 
 /* ── 1. 从信封里取会话 id ── */
 const envelope = (request, args) => JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/prompt', payload: { args: args === undefined ? { request } : args } })
@@ -62,6 +62,26 @@ process.env.DSH_HOME = root
 assert.equal(dshHome(), root, 'DSH_HOME 优先')
 delete process.env.DSH_HOME
 assert.ok(dshHome().endsWith('.dsh'), '没有 DSH_HOME 时用 ~/.dsh')
+
+/* ── 4. 从投影缓存读标题（把子 agent 拉进群时的磁盘兜底） ── */
+const cacheRoot = join(root, 'session_projcache', 'sessions')
+mkdirSync(cacheRoot, { recursive: true })
+// 真机形状：{ "title": { "ver": 1, "seq": 65, "val": "标题" } }
+writeFileSync(join(cacheRoot, 'session-titled.json'), JSON.stringify({
+  title: { ver: 1, seq: 65, val: '你是「dsh-room」插件 0.3.7 的验收小工' },
+}))
+// 另一种形状：rows.title.val
+writeFileSync(join(cacheRoot, 'session-rows.json'), JSON.stringify({
+  rows: { title: { ver: 1, seq: 3, val: '行形状的标题' } },
+}))
+assert.equal(titleFromProjectionCache('session-titled', cacheRoot), '你是「dsh-room」插件 0.3.7 的验收小工')
+assert.equal(titleFromProjectionCache('session-rows', cacheRoot), '行形状的标题')
+assert.equal(titleFromProjectionCache('session-no-such', cacheRoot), '', '查不到返回空串')
+assert.equal(titleFromProjectionCache('', cacheRoot), '')
+writeFileSync(join(cacheRoot, 'session-broken.json'), '{ 不是 JSON')
+assert.equal(titleFromProjectionCache('session-broken', cacheRoot), '', '坏文件不能抛错')
+writeFileSync(join(cacheRoot, 'session-empty.json'), JSON.stringify({ title: { val: '   ' } }))
+assert.equal(titleFromProjectionCache('session-empty', cacheRoot), '', '空白标题当拿不到')
 
 rmSync(root, { recursive: true, force: true })
 console.log('dsh-room sessioninfo test: PASS')

@@ -1,5 +1,25 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.9 — 2026-10-24
+
+### 标题兜底补齐：`session/list` 拿不到时读磁盘投影缓存；再拿不到也不塞 UUID
+
+「杂项」复核时指出：0.3.8 的 `titleOfAgent` 只补了 `session/list` 这一层，
+要是那层也拿不到（没 cookie / 换连接 / 接口形状变了），别名仍会退化成整条 UUID，
+污染成员列表和 @点名。补两手：
+
+- 新增 `titleFromProjectionCache()`（`lib/sessioninfo.mjs`）：直接读
+  `<DSH_HOME>/storages/session_projcache/sessions/<id>.json` 里的
+  `title.val`（真机形状），兼容 `rows.title.val` / `projections.title.val`；坏文件、空白标题都当拿不到。
+- `titleOfAgent()` 三条路依次试：活句柄 → `session/list` → 磁盘投影缓存。
+- 三条都空时不再把整条 UUID 当 title：占位 `未命名会话`，别名成 `未命名会话#后6位`，一眼能看出是哪种情况。
+- 测试：sessioninfo 套件补投影缓存四种情况（正常 / rows 形状 / 查不到 / 坏文件 / 空白）。
+
+### 真机复核（0.3.8 上跑的，纠正一条误判）
+- 「杂项」报的 `fba7dc16…` 那行 `title` 是原始 UUID —— 那条是 0.3.7 写的**旧数据**，不是 0.3.8 的 bug：
+  把该成员移出再重新拉一次（此时该会话已歇着 = 未加载），0.3.8 返回的 title 是
+  `你是「dsh-room」插件 0.3.7 的验`，别名 `验收二号`。
+- 结论：`session/list` 那一层对未加载会话是好使的；0.3.9 的磁盘缓存只是再加一道保险。
 ## 0.3.8 — 2026-10-24
 
 ### 真机验收抓到的两个洞：拉人前不校验会话、拿不到离线会话标题

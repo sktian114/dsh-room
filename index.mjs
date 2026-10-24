@@ -34,7 +34,7 @@ import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
 import { denyBody } from './lib/deny.mjs'
 import { markPromptBody } from './lib/attribute.mjs'
-import { promptSessionId, cwdFromSessionFile } from './lib/sessioninfo.mjs'
+import { promptSessionId, cwdFromSessionFile, titleFromProjectionCache } from './lib/sessioninfo.mjs'
 
 const NAME = 'dsh-room'
 // 版本号以 package.json 为唯一来源，避免发版时两处不一致。
@@ -2386,6 +2386,9 @@ function setup(ctx, config) {
         const hit = items.find((item) => String(item.id || '') === key)
         if (hit && hit.title) return String(hit.title)
       } catch { /* 忽略 */ }
+      // 列表也拿不到（没 cookie / 换连接 / 接口形状变了）时读磁盘上的投影缓存
+      const cached = titleFromProjectionCache(key)
+      if (cached) return cached
       return ''
     }
 
@@ -2627,7 +2630,9 @@ function setup(ctx, config) {
           if (!chat.isAgentMember(groupId, target) && !known.has(target)) {
             return { ok: false, error: 'unknown-agent', agent: target, group: groupId }
           }
-          const title = await titleOfAgent(target) || target
+          // 标题实在拿不到就别把整条 UUID 当名字塞进成员表（会污染 @点名）：
+          // 用「未命名会话」占位，别名会变成「未命名会话#后6位」，一眼能看出是哪种情况。
+          const title = await titleOfAgent(target) || '未命名会话'
           const alias = String((args && args.name) || '').trim()
           const result = chat.addAgent(groupId, { id: target, title, alias: alias || undefined })
           if (result.error) return { ok: false, error: result.error, group: groupId }
