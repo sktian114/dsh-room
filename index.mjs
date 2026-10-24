@@ -1052,28 +1052,41 @@ function setup(ctx, config) {
 
   /**
    * 点名唤醒时，把「没在跑的会话」先让 DSH 恢复出来。
-   * DSH 的 AgentRegistry 上 `get()` 只认活着的实例，`resolveAgent(sessionId)` 才会去
-   * persistence 里把会话读回来、组装成活的 agent（返回 agent 或 `{ error }`）。
+   * `agents.get()` 只认活着的实例；把休眠会话读回来有三条可能的路子，
+   * 不同 DSH 版本暴露的不一样，所以按顺序都试一遍（哪条通就用哪条）：
+   *   1. `resolveAgent(sessionId)` / `resolve(sessionId)` —— 会话属主侧的恢复入口；
+   *   2. `resume({ resumeSessionId })` —— AgentFactory 的恢复入口，返回 agent 句柄。
    * 只有被点名/房主召唤才走这条 —— 恢复会话本身有成本，不能对全群做。
    */
   async function resolveDormantAgent(sessionId) {
     const registry = agentRegistryOf()
     if (!registry) return null
-    const resolve = registry.resolveAgent || registry.resolve
-    if (typeof resolve !== 'function') return null
-    try {
-      const resolved = await resolve.call(registry, String(sessionId))
-      const handle = (resolved && typeof resolved.followup === 'function') ? resolved
-        : (resolved && resolved.agent && typeof resolved.agent.followup === 'function') ? resolved.agent
-          : null
-      if (handle) say('info', '[' + NAME + '] 已恢复休眠会话 ' + sessionId + ' 以便点名唤醒')
-      else say('debug', '[' + NAME + '] 会话 ' + sessionId + ' 恢复不出活的 agent（点名跳过）')
-      return handle
-    } catch (error) {
-      say('warn', '[' + NAME + '] 恢复会话 ' + sessionId + ' 失败（点名未送达）：'
-        + (error && error.message ? error.message : error))
+    const id = String(sessionId)
+    const pick = (value) => {
+      if (value && typeof value.followup === 'function') return value
+      if (value && value.agent && typeof value.agent.followup === 'function') return value.agent
       return null
     }
+    const attempts = [
+      ['resolveAgent', () => registry.resolveAgent(id)],
+      ['resolve', () => registry.resolve(id)],
+      ['resume', () => registry.resume({ resumeSessionId: id })],
+    ]
+    for (const [how, run] of attempts) {
+      if (typeof registry[how] !== 'function') continue
+      try {
+        const handle = pick(await run())
+        if (handle) {
+          say('info', '[' + NAME + '] 已用 agents.' + how + '() 恢复休眠会话 ' + id + '，并按点名唤醒')
+          return handle
+        }
+      } catch (error) {
+        say('debug', '[' + NAME + '] agents.' + how + '() 恢复 ' + id + ' 未成功：'
+          + (error && error.message ? error.message : error))
+      }
+    }
+    say('warn', '[' + NAME + '] 会话 ' + id + ' 恢复不出活的 agent（点名跳过）')
+    return null
   }
 
   /**
