@@ -1,5 +1,18 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.5 — 2026-10-24
+
+### 关掉「裸 resume 恢复休眠会话」这条会弄坏回合的路
+
+- 0.3.3 里点名休眠会话时会依次试 `resolveAgent` / `resolve` / `resume({resumeSessionId})`。
+  前两个在 `ctx.agents` 上其实不存在（它们在会话控制器那边），所以真机上真的走的是
+  `agents.resume()` —— 那是 AgentFactory 的裸恢复，**不装模型选择**。
+- 后果：被唤醒的会话开回合即失败——真机日志：
+  `prompt variable "{{model}}" has no value for section "deployment:persona-prefix"`。
+  唤醒变成「叫醒一个跑不动的会话，还往它日志里塞一条错误回合」，比不唤醒更糟。
+- 现在 `resume()` 只在显式 `DSH_ROOM_PUSH_RESUME=1` 时尝试；默认退化为「跳过，等它自己 read」。
+  `resolveAgent` / `resolve` 只要 DSH 那边暴露了就仍然优先走（那是带完整 setup 的正路）。
+- 测试：host 测试里「恢复不出来 → 跳过不抛错」与「resolveAgent 在 → 恢复 + followup」两条都仍然通过。
 ## 0.3.4 — 2026-10-24
 
 ### 会话里的「头像 + 昵称胶囊」终于能显示了（根因：作者标记从来没打上）+ 房客发指令被误拦

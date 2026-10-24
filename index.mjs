@@ -1080,8 +1080,15 @@ function setup(ctx, config) {
     const attempts = [
       ['resolveAgent', () => registry.resolveAgent(id)],
       ['resolve', () => registry.resolve(id)],
-      ['resume', () => registry.resume({ resumeSessionId: id })],
     ]
+    // `agents.resume({ resumeSessionId })` 是 AgentFactory 的裸恢复：它不装「模型选择」，
+    // 真机上恢复出来的会话跑回合会当场失败
+    // （prompt variable "{{model}}" has no value for section "deployment:persona-prefix"）。
+    // 所以默认不用，只有显式打开 DSH_ROOM_PUSH_RESUME=1 才试 —— 宁可「点名唤不醒」，
+    // 也不要叫醒一个跑不动的会话去污染别人的会话日志。
+    if (/^(1|on|true|yes)$/i.test(String(process.env.DSH_ROOM_PUSH_RESUME || ''))) {
+      attempts.push(['resume', () => registry.resume({ resumeSessionId: id })])
+    }
     for (const [how, run] of attempts) {
       if (typeof registry[how] !== 'function') continue
       try {
