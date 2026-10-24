@@ -30,18 +30,28 @@ const storage = {
 Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true })
 
 let factory = null
+const bundleRegistry = new Map()
 globalThis.window = {
   localStorage: globalThis.localStorage,
   __ModuleLoader__: {
     load(spec) {
-      assert.equal(spec.id, 'dsh-room')
-      factory = spec.factory
+      assert.equal(bundleRegistry.has(spec.id), false, 'each id registers once')
+      bundleRegistry.set(spec.id, spec.factory)
     },
   },
 }
 
 await import('../lib/client.js')
+// 宿主启动清单里的条目 id 就是包名；注册成目录名会被判定「loaded without registering」并整页白屏。
+assert.ok(bundleRegistry.has('@sktian114/dsh-room'), 'bundle registered under the package name')
+assert.ok(bundleRegistry.has('dsh-room'), 'bundle kept the unscoped alias')
+factory = bundleRegistry.get('@sktian114/dsh-room')
 assert.equal(typeof factory, 'function', 'bundle registered a factory')
+assert.deepEqual(
+  bundleRegistry.get('dsh-room')((id) => ({ forwarded: id })),
+  { forwarded: '@sktian114/dsh-room' },
+  'alias factory forwards to the package module',
+)
 
 function createElement(type, props) {
   const children = Array.prototype.slice.call(arguments, 2)
@@ -761,3 +771,4 @@ globalThis.document.querySelectorAll = () => []
 assert.equal(typeof profileApi.installGuestChrome(), 'boolean')
 
 console.log('dsh-room client smoke test: PASS')
+

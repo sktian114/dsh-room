@@ -1,5 +1,29 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.16 — 2026-10-24
+
+### 「联机」按钮消失 / DSH 一重启就白屏崩溃的真因：客户端模块注册 id 不对
+
+- **症状**：DSH 重启后输入框右侧的「联机」按钮不见了（房客身份栏、作者标记也一起消失）；
+  把插件写进 `dsh.profile.bundles` 后更狠 —— 整个网页白屏
+  `Failed to load plugins`，桌面版随后走「关闭所有插件」的恢复流程，profile 配置被重置。
+- **真因**（在隔离 Host 里跑出来的原始报错）：
+  `@sktian114/dsh-room/client.js&rev=…: loaded without registering "@sktian114/dsh-room" via __ModuleLoader__.load`
+  —— 启动清单里的条目 id 是**包名** `@sktian114/dsh-room`，而 `lib/client.js` 里
+  `window.__ModuleLoader__.load({ id: "dsh-room" })` 注册的是目录名，加载器认不出这个包，
+  整批客户端模块直接判失败 → 页面白屏 → 桌面版按 fatal 处理。
+- **修法**：`lib/client.js` 以包名注册（`id: "@sktian114/dsh-room"`），另外补一个
+  `id: "dsh-room"` 的别名注册，转发到正式模块，老的无作用域安装路径也能命中。
+- **加载方式也跟着改**：客户端半边只认 profile 的 `dsh.profile.bundles`（`"dsh-room"`，
+  目录名形式），行由插件自带的 `cordis.patch.yml` 插入；profile 自己的
+  `cordis.patch.yml` 里**不要**再 insert 同一个包（同一个包两个 Loader 行会让清单报
+  multiple active Loader sources）。只用 insert 加载时宿主半边能跑、客户端半边永远不下发，
+  页面上还看不到任何报错。
+- **验证**：`npm test` 全绿（client 用例新增「按包名注册 + 别名转发」断言）；再用
+  `resources/runtime` 里的宿主在隔离 profile 上单独起一个 DSH（不动用户 profile），
+  页面正常启动、`联机` 按钮可见（`roomEntryCount: 1`，`dsh-room-launch`），
+  `data-dsh-room-author="ready"`。
+
 ## 0.1.15 — 2026-10-24
 
 ### 会话里「这条是谁发的」胶囊终于会出现（真因：prompt 走 WebSocket，不走 HTTP）
