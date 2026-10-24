@@ -1,5 +1,20 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.2 — 2026-10-24
+
+### 真机验收第二次：投递到了、会话却被 DSH 拒收 —— source kind 用了已退役写法
+
+- 0.3.1 上 `ping` 自检 `agentService:true`，点名一条消息拿到 `pushed:{woke:1, skipped:36}`，
+  说明**投递链路通了**；但被唤醒的会话当场报
+  「本轮运行失败：format v4 message requires a producer-owned source kind」。
+- 根因：`source` 用了 `{ kind: 'plugin', plugin: '@sktian114/dsh-room' }`。
+  DSH 的 v4 会话格式只接受 **producer-owned** 的 source kind，`kind: 'plugin'` 是退役包装
+  （`dsh-session-format-v3-to-v4` 的 `source()` 见到 `kind === 'plugin'` 直接抛错），
+  写进会话日志时被拒，整轮作废。
+- 修法：改成 DSH 自己的规范形态 `{ kind: 'plugin:@sktian114/dsh-room' }`
+  （`producerKind()` 对插件生产者返回的就是 `plugin:<包名>`；非空且不为 `plugin` 的 kind 原样保留）。
+  host 测试加了断言，锁死「不能再用 `kind:'plugin'`，也不能带 `plugin` 字段」。
+
 ## 0.3.1 — 2026-10-24
 
 ### 真机验收抓到的 P0 根因：插件没拿到 agent 句柄服务 + 文案统一成「虚拟内网」

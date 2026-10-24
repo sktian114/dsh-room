@@ -497,7 +497,12 @@ assert.equal(refactorAgent.calls[0].how, 'inject', '默认走 inject（不唤醒
 const pushedText = refactorAgent.calls[0].payload.content[0].text
 assert.ok(pushedText.includes('给 agent 的活'), '投递正文里要有消息内容')
 assert.ok(pushedText.includes('room_chat_read'), '投递正文要告诉它怎么读')
-assert.equal(refactorAgent.calls[0].payload.source.kind, 'plugin')
+// source.kind 必须是 producer-owned 形态：`{kind:'plugin'}` 是 DSH v4 已退役写法，
+// 落盘会被拒（真机上表现为「本轮运行失败：format v4 message requires a producer-owned source kind」）。
+const pushedSource = refactorAgent.calls[0].payload.source
+assert.equal(pushedSource.kind, 'plugin:@sktian114/dsh-room')
+assert.notEqual(pushedSource.kind, 'plugin', '退役的 plugin 包装会被 DSH 拒收')
+assert.equal('plugin' in pushedSource, false, '不能带 plugin 字段（那是 v3 的写法）')
 
 // 同一条消息不会重复投递：游标推进后再发新消息只推新的那条
 const secondSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '第二条' })

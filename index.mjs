@@ -968,7 +968,13 @@ function setup(ctx, config) {
     return !(flag === '0' || flag === 'off' || flag === 'false' || flag === 'no')
   })()
 
-  const PUSH_SOURCE = { kind: 'plugin', plugin: '@sktian114/dsh-room' }
+  // DSH 的 v4 会话格式只收「producer-owned」的 source kind：`{ kind: 'plugin', plugin }`
+  // 是**已退役**的写法，落盘时会被拒 —— 真机上就是它把被唤醒的会话打断成
+  // 「本轮运行失败：format v4 message requires a producer-owned source kind」。
+  // 插件生产者的规范形态是 `plugin:<包名>`（DSH 内部 producerKind() 就这么生成；
+  // 不认识但非空的 kind 会原样保留，不会被拒绝）。
+  const PUSH_SOURCE = { kind: 'plugin:@sktian114/dsh-room' }
+
 
   // `agents` 是 @deepseek-ai/dsh-agent-loop 提供的服务，不在本插件的 inject 声明里
   // （缺了也不该让房间起不来），所以用 scoped inject 主动拿一次，拿不到就退化成「只投递、找不到就跳过」。
