@@ -198,8 +198,10 @@ const guestOrigin = 'http://172.16.1.130:8787'
 function rawRequest(method, path, headers) {
   return new Promise((resolve, reject) => {
     const request = httpRequest(roomBase + path, { method, headers }, (response) => {
-      response.resume()
-      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers }))
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => { body += chunk })
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body }))
     })
     request.on('error', reject)
     request.setTimeout(4000, () => request.destroy(new Error('timeout')))
@@ -208,6 +210,13 @@ function rawRequest(method, path, headers) {
 }
 const corsPing = await rawRequest('GET', '/room/api/ping', { origin: guestOrigin })
 assert.equal(corsPing.headers['access-control-allow-origin'], guestOrigin)
+// /room/api/self：前端靠它判断「房主 or 房客」。走房间代理的一律不是房主
+// （代理会给每个转发请求盖上 x-forwarded-for），房主浏览器是直连 DSH 端口的。
+const selfViaProxy = await rawRequest('GET', '/room/api/self', {})
+assert.equal(selfViaProxy.status, 200)
+assert.equal(JSON.parse(selfViaProxy.body).host, false, '经代理进来的都算房客')
+const selfGuest = await rawRequest('GET', '/room/api/self', { 'x-forwarded-for': '192.168.1.23' })
+assert.equal(JSON.parse(selfGuest.body).host, false, '带 x-forwarded-for 的也是房客')
 const preflight = await rawRequest('OPTIONS', '/room/api/join', {
   origin: guestOrigin,
   'access-control-request-method': 'POST',

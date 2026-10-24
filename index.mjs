@@ -1396,6 +1396,18 @@ function setup(ctx, config) {
       String(req.socket.remoteAddress || '')
 
     try {
+      // 前端用它判断「我现在是房主还是房客」：房主直连 loopback，房客一定经代理。
+      // 房客页面据此把侧栏换成本地访客身份，不依赖 localStorage 里有没有旧记录。
+      if (path === PREFIX + '/api/self') {
+        sendJson(res, 200, {
+          ok: true,
+          host: isDirectHost(req),
+          room: room.active,
+          name: room.active ? room.name : '',
+        }, cors)
+        return
+      }
+
       if (path === PREFIX + '/api/ping' || path === PREFIX + '/api/health') {
         sendJson(res, 200, {
           ok: true,
@@ -1410,8 +1422,7 @@ function setup(ctx, config) {
         return
       }
 
-      if (path === PREFIX + '/api/join' && req.method === 'POST') {
-        if (!room.active) {
+      if (path === PREFIX + '/api/join' && req.method === 'POST') {        if (!room.active) {
           sendJson(res, 404, { ok: false, error: 'no-room' }, cors)
           return
         }

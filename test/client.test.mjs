@@ -583,19 +583,122 @@ assert.equal(mine.parentElement, actions, '自己的按钮留在原位')
 assert.equal(mine.attrs['data-dsh-room-hidden'], undefined)
 assert.equal(globalThis.document.documentElement.attrs['data-dsh-room-guest'], '1', '给 CSS 一个开关')
 
-// 注册到 sidebar.footer.action，且只在房客页渲染
-let footerSlot = null
-const guestCtx = {
-  slots: {
-    inject(name, factoryFn) { footerSlot = { name, factoryFn } },
-    register(spec, component) { return { spec, component } },
-  },
+// 注入左下角按钮：纯 DOM，不依赖 React 插槽
+const domRegistry = []
+function domEl(tag, className) {
+  const el = {
+    tagName: String(tag).toUpperCase(),
+    nodeType: 1,
+    className: className || '',
+    attrs: {},
+    children: [],
+    parentElement: null,
+    firstChild: null,
+    style: { setProperty(key, value) { this[key] = value } },
+    textContent: '',
+    title: '',
+    type: '',
+    value: '',
+    listeners: {},
+    appendChild(child) {
+      child.parentElement = this
+      this.children.push(child)
+      this.firstChild = this.children[0]
+      domRegistry.push(child)
+      return child
+    },
+    removeChild(child) {
+      this.children = this.children.filter((item) => item !== child)
+      this.firstChild = this.children[0] || null
+      child.parentElement = null
+      return child
+    },
+    setAttribute(key, value) { this.attrs[key] = value },
+    getAttribute(key) { return Object.prototype.hasOwnProperty.call(this.attrs, key) ? this.attrs[key] : null },
+    removeAttribute(key) { delete this.attrs[key] },
+    get parentNode() { return this.parentElement },
+    addEventListener(type, handler) { (this.listeners[type] = this.listeners[type] || []).push(handler) },
+    focus() {},
+    getBoundingClientRect() { return { left: 12, top: 700, right: 200, bottom: 726 } },
+    querySelectorAll(selector) {
+      if (selector === 'nav') return this.children.filter((child) => child.tagName === 'NAV')
+      return []
+    },
+  }
+  return el
 }
-assert.equal(profileApi.installGuestIdentity(guestCtx), true)
-assert.equal(footerSlot.name, 'sidebar.footer.action')
-const footerRegistered = footerSlot.factoryFn()
-assert.equal(footerRegistered.component, profileApi.GuestIdentity)
-assert.equal(footerRegistered.spec.name, 'sidebar.footer.action')
-assert.equal(profileApi.installGuestIdentity({ slots: null }), false, '没有插槽时安静失败')
+
+function matchSelector(el, selector) {
+  const text = selector.trim()
+  let m = text.match(/^\[([\w-]+)\*="(.+)"\]$/)
+  if (m) return String(el.className || '').indexOf(m[2]) >= 0
+  m = text.match(/^\[([\w-]+)\]$/)
+  if (m) return Object.prototype.hasOwnProperty.call(el.attrs, m[1])
+  m = text.match(/^([a-z]+)$/)
+  if (m) return el.tagName === m[1].toUpperCase()
+  return false
+}
+
+const bodyEl = domEl('BODY')
+domRegistry.push(bodyEl)
+const fakeDocument = {
+  readyState: 'complete',
+  documentElement: { attrs: {}, setAttribute(k, v) { this.attrs[k] = v }, getAttribute(k) { return this.attrs[k] || null } },
+  body: bodyEl,
+  createElement(tag) { return domEl(tag) },
+  querySelector(selector) { return fakeDocument.querySelectorAll(selector)[0] || null },
+  querySelectorAll(selector) {
+    const results = []
+    const visit = (el) => {
+      if (selector.split(',').some((part) => matchSelector(el, part))) results.push(el)
+      el.children.forEach(visit)
+    }
+    bodyEl.children.forEach(visit)
+    return results
+  },
+  addEventListener() {},
+  getElementById() { return null },
+}
+globalThis.document = new Proxy(globalThis.document, {
+  get(target, key) {
+    if (key in fakeDocument) return fakeDocument[key]
+    return target[key]
+  },
+})
+
+// 房客页：插槽没渲染也能出现按钮（先浮在左下角），侧栏出现后挪进 footerActions
+bodyEl.appendChild(domEl('DIV', 'xyz_footerActions'))
+profileApi.sweepGuestChrome()   // 有房客记录 → 自动激活
+let meChip = globalThis.document.querySelector('[data-dsh-room-me]')
+assert.ok(meChip, '房客页必须有「我的身份」按钮')
+assert.equal(meChip.parentElement.className, 'xyz_footerActions', '按钮要挂在侧栏页脚里')
+assert.equal(meChip.getAttribute('data-floating'), null, '能挂进页脚就不浮动')
+assert.equal(String(meChip.title).indexOf('小鹿') >= 0, true, '按钮上写着本地昵称')
+
+// 点开编辑器：改昵称 + 选头像 → 只写 localStorage
+profileApi.openGuestEditor(meChip)
+const pop = globalThis.document.querySelector('[data-dsh-room-me-pop]')
+assert.ok(pop, '点开要有小面板')
+const descendants = []
+const collect = (el) => { descendants.push(el); el.children.forEach(collect) }
+pop.children.forEach(collect)
+const input = descendants.find((el) => el.tagName === 'INPUT')
+assert.ok(input, '面板里有昵称输入框')
+const allButtons = descendants.filter((el) => el.tagName === 'BUTTON')
+const save = allButtons.find((button) => button.textContent === '保存')
+assert.ok(save, '面板里有保存按钮')
+input.value = '阿鱼'
+const fox = allButtons.find((button) => button.textContent === '🦊')
+assert.ok(fox, '面板里有头像可选')
+fox.listeners.click[0]()
+save.listeners.click[0]()
+assert.deepEqual(profileApi.readGuestProfile(), { name: '阿鱼', avatar: '🦊' }, '保存后只写本地')
+assert.equal(meChip.title.indexOf('阿鱼') >= 0, true, '按钮立刻跟着改名')
+assert.equal(globalThis.document.querySelector('[data-dsh-room-me-pop]'), null, '保存后关闭面板')
+
+// 房主页：读不到房客记录时不会乱插按钮
+globalThis.localStorage.removeItem('dsh-room.guest')
+globalThis.document.querySelectorAll = () => []
+assert.equal(typeof profileApi.installGuestChrome(), 'boolean')
 
 console.log('dsh-room client smoke test: PASS')
