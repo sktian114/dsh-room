@@ -486,7 +486,8 @@ const chip = moduleExports.__test.AuthorChip({ node: { id: 'room-author', data: 
 assert.equal(chip.props.className, 'dsh-room-author')
 const chipParts = chip.children.map((child) => child && child.props && child.props.className)
 assert.deepEqual(chipParts, ['dsh-room-authoravatar', 'dsh-room-authorname'])
-assert.equal(chip.children[0].children[0], '05', '默认名取尾号，头像不撞')
+assert.equal(chip.children[0].props.fallback, '05', '默认名取尾号，头像不撞')
+assert.equal(chip.children[0].props.avatar, '', '成员还没上传头像时走首字母')
 assert.equal(chip.children[1].children[0], '访客6105')
 assert.equal(chip.props.title.includes('访客6105'), true)
 
@@ -549,9 +550,14 @@ assert.equal(JSON.parse(sentBody).payload.args.request.content[0].text, '不该�
 
 // 9. 房客页：只留工作区 + 左下角改成「我的身份」（昵称/头像只存本地）
 const profileApi = moduleExports.__test
+const TINY_AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 assert.equal(profileApi.readGuestProfile(), null)
+profileApi.writeGuestProfile({ name: '小鹿', avatar: TINY_AVATAR })
+assert.deepEqual(profileApi.readGuestProfile(), { name: '小鹿', avatar: TINY_AVATAR })
+// 旧版存的 emoji 头像不再沿用（改成自己上传图片之后一律回退首字母）
 profileApi.writeGuestProfile({ name: '小鹿', avatar: '🦊' })
-assert.deepEqual(profileApi.readGuestProfile(), { name: '小鹿', avatar: '🦊' })
+assert.deepEqual(profileApi.readGuestProfile(), { name: '小鹿', avatar: '' }, 'emoji 头像当作没有')
+profileApi.writeGuestProfile({ name: '小鹿', avatar: TINY_AVATAR })
 assert.equal(profileApi.guestDisplayName(), '小鹿', '本地昵称优先')
 assert.equal(profileApi.isGuestPage(), false, '没加入房间时不是房客页')
 // 房客身份（模拟 saveGuest 写进去的记录）
@@ -710,26 +716,81 @@ footerHolder.getBoundingClientRect = () => ({ left: 12, top: 700, width: 220, he
 profileApi.sweepGuestChrome()
 assert.equal(meChip.parentElement.className, 'xyz_footerActions', '页脚回来后要挪回去')
 
-// 点开编辑器：改昵称 + 选头像 → 只写 localStorage
+// 点开编辑器：改昵称 + 上传头像 → 只写 localStorage
 profileApi.openGuestEditor(meChip)
 const pop = globalThis.document.querySelector('[data-dsh-room-me-pop]')
 assert.ok(pop, '点开要有小面板')
 const descendants = []
 const collect = (el) => { descendants.push(el); el.children.forEach(collect) }
 pop.children.forEach(collect)
-const input = descendants.find((el) => el.tagName === 'INPUT')
+const input = descendants.find((el) => el.tagName === 'INPUT' && el.type !== 'file')
 assert.ok(input, '面板里有昵称输入框')
+// 头像是「自己上传图片」，不再是 emoji 选择
+const fileInput = descendants.find((el) => el.tagName === 'INPUT' && el.type === 'file')
+assert.ok(fileInput, '面板里有图片上传入口')
+assert.equal(fileInput.accept, 'image/*', '上传入口只收图片')
 const allButtons = descendants.filter((el) => el.tagName === 'BUTTON')
 const save = allButtons.find((button) => button.textContent === '保存')
 assert.ok(save, '面板里有保存按钮')
+assert.ok(allButtons.find((button) => button.textContent === '上传图片'), '面板里有「上传图片」按钮')
+assert.ok(allButtons.find((button) => button.textContent === '用首字母'), '面板里有「用首字母」按钮')
+assert.equal(allButtons.some((button) => button.textContent === '🦊'), false, '不该再有 emoji 头像可选')
 input.value = '阿鱼'
-const fox = allButtons.find((button) => button.textContent === '🦊')
-assert.ok(fox, '面板里有头像可选')
-fox.listeners.click[0]()
 save.listeners.click[0]()
-assert.deepEqual(profileApi.readGuestProfile(), { name: '阿鱼', avatar: '🦊' }, '保存后只写本地')
+assert.deepEqual(profileApi.readGuestProfile(), { name: '阿鱼', avatar: '' }, '没选图时只记昵称（头像回退首字母）')
 assert.equal(meChip.title.indexOf('阿鱼') >= 0, true, '按钮立刻跟着改名')
 assert.equal(globalThis.document.querySelector('[data-dsh-room-me-pop]'), null, '保存后关闭面板')
+
+// 上传的图片头像：data URL 画成 <img>，emoji/空值退回首字母
+const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+assert.equal(profileApi.isImageAvatar(TINY_PNG), true, 'data:image 算图片头像')
+assert.equal(profileApi.isImageAvatar('🦊'), false, 'emoji 不算图片头像')
+assert.equal(profileApi.isImageAvatar(''), false, '空值不算图片头像')
+const imgSlot = domEl('SPAN', 'dsh-room-authoravatar')
+profileApi.paintAvatarInto(imgSlot, TINY_PNG, '阿鱼')
+assert.equal(imgSlot.children[0].tagName, 'IMG', '图片头像要画成 img')
+assert.equal(imgSlot.children[0].src, TINY_PNG, 'img 的 src 就是上传的那张图')
+const letterSlot = domEl('SPAN', 'dsh-room-authoravatar')
+profileApi.paintAvatarInto(letterSlot, '', '阿鱼')
+assert.equal(letterSlot.textContent, '阿鱼', '没有图就用昵称首字母')
+// 图片头像也要能画进左下角那颗身份按钮
+profileApi.writeGuestProfile({ name: '阿鱼', avatar: TINY_PNG })
+profileApi.sweepGuestChrome()
+const chipAvatar = meChip.children[0]
+assert.equal(chipAvatar.children[0].tagName, 'IMG', '身份按钮里显示上传的头像')
+assert.ok(String(chipAvatar.className).indexOf('hasimg') >= 0, '头像槽要带 hasimg 标记（去掉底色）')
+profileApi.writeGuestProfile({ name: '阿鱼', avatar: '' })
+profileApi.sweepGuestChrome()
+
+// 左上角品牌块（大标题）本身是个「新建会话」按钮 —— 不许被当成多余入口藏掉
+const sidebarWrap = domEl('DIV', 'xyz_sidebar')
+bodyEl.appendChild(sidebarWrap)
+const brandBtn = domEl('BUTTON', 'wtg9ga_brand wtg9ga_wide')
+brandBtn.setAttribute('aria-label', '新建会话')
+brandBtn.appendChild(domEl('SPAN', 'wtg9ga_brandIdentity'))
+sidebarWrap.appendChild(brandBtn)
+const newSessionBtn = domEl('BUTTON', 'xyz_newSession')
+newSessionBtn.setAttribute('aria-label', '新建会话')
+sidebarWrap.appendChild(newSessionBtn)
+profileApi.sweepGuestChrome()
+assert.equal(brandBtn.getAttribute('data-dsh-room-hidden'), null, '左上角大标题（品牌块）不许被藏')
+assert.equal(newSessionBtn.getAttribute('data-dsh-room-hidden'), '1', '真正的「新建会话」按钮仍然要藏')
+// 以前误标的也要能自己摘掉
+brandBtn.setAttribute('data-dsh-room-hidden', '1')
+profileApi.sweepGuestChrome()
+assert.equal(brandBtn.getAttribute('data-dsh-room-hidden'), null, '误标在品牌块上的隐藏要自愈')
+bodyEl.removeChild(sidebarWrap)
+
+// 气泡里的身份胶囊（DOM 兜底）：标记 → 头像 + 昵称
+profileApi.rememberMembers([{ id: 'g1', name: '小鹿', avatar: TINY_PNG }])
+const authorChip = profileApi.buildAuthorChipDom('小鹿')
+assert.equal(authorChip.className, 'dsh-room-author', '胶囊用统一的类名')
+assert.equal(authorChip.children[1].textContent, '小鹿', '胶囊上写着谁说的')
+assert.equal(authorChip.children[0].children[0].tagName, 'IMG', '有上传头像的人在胶囊里用图片')
+const plainChip = profileApi.buildAuthorChipDom('阿伟')
+assert.equal(plainChip.children[0].textContent, '阿伟', '没头像的人用首字母')
+assert.equal(plainChip.title, '这条指令来自：阿伟', '悬停能看清是谁')
+assert.equal(profileApi.avatarForName('小鹿'), TINY_PNG, '成员头像缓存按名字查得到')
 
 // ── 「这条是谁说的」标记：DSH 0.2.1 的 prompt 走 WebSocket，不走 HTTP / fetch ──
 const promptFrame = JSON.stringify({

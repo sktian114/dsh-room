@@ -12,7 +12,7 @@
  */
 import { createServer, request as httpRequest, get as httpGet } from 'node:http'
 import { strict as assert } from 'node:assert'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join as joinPath } from 'node:path'
 
@@ -461,6 +461,36 @@ assert.ok(
   incremental.body.messages.some((m) => m.group === groupId && m.from.kind === 'system' && m.text.includes('重构助手')),
   'adding an agent should leave a system notice in the group',
 )
+
+// 8.6 房客昵称/头像 + 本地存档：重启后聊天记录与「谁是谁」都还在
+console.log('step: persist')
+const AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const profileSave = await httpPostJson(roomBase + '/room/api/profile?token=' + guestToken, { name: '阿伟', avatar: AVATAR })
+assert.equal(profileSave.status, 200)
+assert.equal(profileSave.json.ok, true)
+assert.equal(profileSave.json.self.avatar, AVATAR, '房客头像要记到房主这边')
+const stateWithAvatar = await httpGetJson(roomBase + '/room/api/state?token=' + guestToken)
+assert.equal(stateWithAvatar.body.members.some((m) => m.avatar === AVATAR), true, '成员列表里带头像')
+// 落盘（0.8 秒合并一次，等一下再看文件）
+await new Promise((resolve) => setTimeout(resolve, 1300))
+const storeFile = joinPath(process.env.DSH_HOME, 'dsh-room-store.json')
+const savedStore = JSON.parse(readFileSync(storeFile, 'utf8'))
+assert.equal(savedStore.version, 1)
+const savedProfiles = Object.values(savedStore.members || {})
+assert.ok(savedProfiles.some((m) => m.name === '阿伟' && m.avatar === AVATAR), '存档里有房客的昵称与头像')
+assert.ok(savedStore.chat && Array.isArray(savedStore.chat.groups), '存档里有聊天群')
+assert.ok(savedStore.chat.groups.some((g) => g.id === groupId && g.name === '前端小组'), '自建的群也存了')
+assert.ok(
+  savedStore.chat.groups.some((g) => (g.messages || []).some((m) => m.text === '在吗')),
+  '聊天记录落盘了',
+)
+assert.ok((savedStore.chat.messages || savedStore.chat.recent || []).length > 0, '全局消息也存了')
+// 头像只收图片：脚本/超长内容一律丢掉（前端传什么都不能变成 XSS 入口）
+const badAvatar = await httpPostJson(roomBase + '/room/api/profile?token=' + guestToken, { avatar: 'javascript:alert(1)' })
+assert.equal(badAvatar.json.ok, true)
+assert.equal(badAvatar.json.self.avatar, '', '非图片内容不收')
+const noAuthProfile = await httpPostJson(roomBase + '/room/api/profile?token=deadbeef', { avatar: AVATAR })
+assert.equal(noAuthProfile.status, 401, '没令牌不能改身份')
 
 // 房客不能冒充房主建群（请求经过代理时带 x-forwarded-for）
 const hijack = await fetch(roomBase + '/room/api/host/chat/group', {

@@ -83,4 +83,28 @@ assert.equal(small.messagesOf('lobby').length, 50)
 assert.equal(small.sync({ since: 0 }).messages.length, 50)
 assert.equal(small.sync({ since: 0 }).seq, 80)
 
+/* ── 9. 快照 / 还原：聊天记录与「谁是谁」（昵称 + 头像）重启后还在 ── */
+{
+  let saves = 0
+  const live = createChatStore({ onChange: () => { saves += 1 } })
+  live.ensureLobby('大厅')
+  live.post({ from: { kind: 'host', id: 'host', name: '房主' }, text: '在吗' })
+  live.post({ from: { kind: 'user', id: 'g1', name: '阿伟', avatar: 'data:image/png;base64,AAAA' }, text: '在' })
+  assert.ok(saves >= 2, '每次写入都要通知宿主落盘')
+
+  const snapshot = JSON.parse(JSON.stringify(live.snapshot()))
+  const revived = createChatStore()
+  assert.equal(revived.restore(snapshot), true, '快照能装回去')
+  revived.ensureLobby('大厅')
+  const restored = revived.messagesOf('lobby', 0, 50)
+  assert.equal(restored.length, 2, '重启后消息还在')
+  assert.equal(restored[1].from.name, '阿伟', '发言人名字也在')
+  assert.equal(restored[1].from.avatar, 'data:image/png;base64,AAAA', '头像跟着消息一起存档')
+  assert.equal(revived.sync({ since: 0 }).groups.length, 1, '群列表也在')
+  const next = revived.post({ from: { kind: 'host', id: 'host', name: '房主' }, text: '继续' })
+  assert.ok(next.message.seq > snapshot.seq, 'seq 接着往上涨，不会撞号')
+  assert.equal(revived.restore(null), false, '坏存档不炸')
+  assert.equal(revived.restore('乱码'), false, '非对象存档也不炸')
+}
+
 console.log('dsh-room chat test: PASS')

@@ -1,7 +1,8 @@
 /**
  * dsh-room —— 房间联机（宿主半边）
  *
- * 目标：在蒲公英 / ZeroTier 这类“先把机器放进同一个虚拟局域网”的软件之后，
+ * 目标：在「两台机器已经连在同一个网络里」之后（同一局域网，或 ZeroTier / Tailscale /
+ * 蒲公英这类组网工具搭出来的虚拟局域网，插件不绑定其中任何一个），
  * 房客只要在 DSH 面板里输入 `172.16.1.130:8787`，就能进入房主的房间：
  *   · 看到房间成员
  *   · 展开房主工作区的文件 / 程序列表
@@ -18,15 +19,15 @@
  *   让 DSH 用 303 + Set-Cookie 完成登录握手；之后依赖 cookie 即可。
  *
  * 安全边界：
- *   · 房间 = 房主本人的 shell。蒲公英网络成员默认可信；可选房间口令。
+ *   · 房间 = 房主本人的 shell。同一网络里的成员默认可信；可选房间口令。
  *   · /room/api/host/* 只接受本机直连，代理会拒绝来自外部的这类请求。
  *   · 不把 DSH 的进程令牌暴露给房客：令牌只出现在代理内部发起的 303 跳转里。
  */
 
 import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, hostname, homedir } from 'node:os'
-import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs'
-import { join, resolve, sep, basename } from 'node:path'
+import { readFileSync, writeFileSync, statSync, readdirSync, mkdirSync } from 'node:fs'
+import { join, resolve, sep, basename, dirname } from 'node:path'
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
 import { createGuestGuard } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
@@ -100,6 +101,16 @@ function cleanText(value, max) {
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .trim()
     .slice(0, max)
+}
+
+/** 头像只接受 data:image/... 的压缩小图或 http(s) 链接，别的（例如脚本）一律丢掉。 */
+const AVATAR_LIMIT = 200 * 1024
+function cleanAvatar(value) {
+  const text = String(value ?? '')
+  if (!text || text.length > AVATAR_LIMIT) return ''
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(text)) return text
+  if (/^https?:\/\/[^\s"'<>]{1,500}$/.test(text)) return text
+  return ''
 }
 
 function workspacesFromHome() {
@@ -463,8 +474,56 @@ function setup(ctx, config) {
   const handshakes = new Map()
 
   // 房间聊天群：人在群里（房主 + 所有访客），agent 由房主手动拉进指定群。
-  // 只存内存：房间停了记录就没了，不给磁盘多留一份要管权限的数据。
-  const chat = createChatStore()
+  // 消息与「谁是谁」（昵称 + 头像）落盘到 ~/.dsh/dsh-room-store.json：
+  // 重启 DSH、重开房间之后，聊天记录与房客身份都还在。
+  const STORE_FILE = join(dshHome(), 'dsh-room-store.json')
+  let storeTimer = null
+
+  /** 读本地存档：{ members: {id:{name,avatar}}, chat: snapshot }。坏了就当空的，绝不让房间起不来。 */
+  function loadRoomStore() {
+    try {
+      const parsed = JSON.parse(readFileSync(STORE_FILE, 'utf8'))
+      if (!parsed || typeof parsed !== 'object') return { members: {}, chat: null }
+      const profiles = parsed.members && typeof parsed.members === 'object' ? parsed.members : {}
+      return { members: profiles, chat: parsed.chat || null }
+    } catch {
+      return { members: {}, chat: null }
+    }
+  }
+
+  /** 写盘（0.8 秒合并一次，聊天刷屏时不会一直写盘）。 */
+  function saveRoomStore() {
+    if (storeTimer) return
+    storeTimer = setTimeout(() => {
+      storeTimer = null
+      flushRoomStore()
+    }, 800)
+    if (storeTimer && typeof storeTimer.unref === 'function') storeTimer.unref()
+  }
+
+  function flushRoomStore() {
+    try {
+      const profiles = {}
+      for (const [id, member] of members) {
+        if (!member || member.kind !== 'guest') continue
+        profiles[id] = {
+          id,
+          name: String(member.name || '').slice(0, 40),
+          avatar: String(member.avatar || ''),
+          kind: 'guest',
+          ip: String(member.ip || ''),
+          seenAt: Number(member.lastSeen) || 0,
+        }
+      }
+      const payload = { version: 1, savedAt: Date.now(), members: profiles, chat: chat.snapshot() }
+      mkdirSync(dirname(STORE_FILE), { recursive: true })
+      writeFileSync(STORE_FILE, JSON.stringify(payload), 'utf8')
+    } catch { /* 落盘失败不影响房间本身 */ }
+  }
+
+  const store = loadRoomStore()
+  const chat = createChatStore({ onChange: () => saveRoomStore() })
+  chat.restore(store.chat)
   chat.ensureLobby('大厅')
 
   // 每个房客 TCP 连接一份守卫状态（streamId→端点、workspaceId→路径 的对应关系）
@@ -781,6 +840,7 @@ function setup(ctx, config) {
       id: m.id,
       name: m.name,
       kind: m.kind,
+      avatar: m.avatar || '',
       joinedAt: m.joinedAt,
       lastSeen: m.lastSeen,
     }))
@@ -851,6 +911,7 @@ function setup(ctx, config) {
         kind: member.kind === 'host' ? 'host' : 'user',
         id: member.id,
         name: member.name || (member.kind === 'host' ? '房主' : '访客'),
+        avatar: member.avatar || '',
       }
     }
     if (isDirectHost(req)) return { kind: 'host', id: 'host', name: cfg.name || '房主' }
@@ -1477,10 +1538,14 @@ function setup(ctx, config) {
         const id = identity.id
         const token = randomBytes(24).toString('hex')
         const previous = members.get(id)
+        const saved = store.members[id] || null
+        // 头像优先用这次带过来的，其次沿用内存里那份，最后回落到本地存档。
+        const avatar = cleanAvatar(body.avatar) || (previous && previous.avatar) || (saved && cleanAvatar(saved.avatar)) || ''
         const member = {
           id,
           token,
           name,
+          avatar,
           kind: 'guest',
           ip,
           joinedAt: previous ? previous.joinedAt : Date.now(),
@@ -1491,14 +1556,38 @@ function setup(ctx, config) {
         if (previous && previous.token && previous.token !== token) tokens.delete(previous.token)
         // 只有「新面孔」才播报；同一个人断线重连（id 没变）不刷屏。
         if (!previous) systemSay(name + ' 加入了房间')
+        saveRoomStore()
         sendJson(res, 200, {
           ok: true,
           token,
-          self: { id, name },
+          self: { id, name, avatar },
           room: publicRoom(),
           members: memberList(),
           workspaces: guestWorkspaces(),
           workspace: workspacePayload(),
+        }, cors)
+        return
+      }
+
+      // 房客改昵称/头像：房主这边落盘，重启或换浏览器后还能对上人。
+      if (path === PREFIX + '/api/profile' && req.method === 'POST') {
+        const member = authMember(req, url)
+        if (!member || member.isHostToken) {
+          sendJson(res, 401, { ok: false, error: 'unauthorized', stale: true }, cors)
+          return
+        }
+        const body = (await readJson(req)) || {}
+        const nextName = cleanText(body.name, 24)
+        const nextAvatar = cleanAvatar(body.avatar)
+        if (nextName) member.name = nextName
+        // 允许显式清空头像（前端「用首字母」时传空串）
+        member.avatar = nextAvatar
+        member.lastSeen = Date.now()
+        saveRoomStore()
+        sendJson(res, 200, {
+          ok: true,
+          self: { id: member.id, name: member.name, avatar: member.avatar },
+          members: memberList(),
         }, cors)
         return
       }
@@ -1555,7 +1644,7 @@ function setup(ctx, config) {
         const body = (await readJson(req)) || {}
         const result = chat.post({
           groupId: cleanText(body.group, 64) || 'lobby',
-          from: { kind: who.kind, id: who.id, name: who.name },
+          from: { kind: who.kind, id: who.id, name: who.name, avatar: who.avatar || '' },
           text: body.text,
         })
         if (result.error) {
