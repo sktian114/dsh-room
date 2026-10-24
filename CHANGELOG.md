@@ -1,5 +1,26 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.13 — 2026-10-24
+
+### 开发流程：改插件不再需要退出 DSH
+
+- **发现**：DSH 0.2.1-rc.2 自带 `@deepseek-ai/dsh-hmr`（宿主）与 `@deepseek-ai/dsh-client-hmr`
+  （浏览器），profile 上下文里默认以 `root: []` 启用 —— 只监听配置、不监听源码目录，
+  但**每次重新组合都会替换 profile 目录下（含 `node_modules` 与已链接包目标）磁盘上
+  已变化的插件**。所以改完 `index.mjs` 只要让它重新组合一次就生效，不需要重启。
+- **实测**（本机，无 DSH 重启）：运行中的插件 version `0.1.11` → 改文件 + 写一次
+  `cordis.patch.yml` → **2.1 秒后** `/room/api/host/state` 的 `version` 变成新值。
+  重载会丢掉插件自身内存状态（房间需要重开），会话 / 工作区 / 模型上下文都在。
+- **新增 `tools/watch-plugin.ps1`**：`FileSystemWatcher` 监听源码目录（跳过 `.git` /
+  `node_modules` / `test` / `docs`），300 ms 防抖 + 2.5 s 冷却，变化后改写
+  `cordis.patch.yml` 里的一行 `# hmr-probe <时间戳>` 触发重新组合；`-RoomPort 8787`
+  会顺带确认插件真的换了（房间端口断开或版号变化）。`-Once` 只触发一次。
+- **profile 里的插件改成目录联接**：`~/.dsh/profiles/desktop/node_modules/dsh-room`
+  → `E:\E Download\AIWorking\dsh space\dsh-room`，写代码和 DSH 加载的是同一份文件，
+  不再需要「改完复制过去」。旧的复制版备份在 `~/.dsh/backups/dsh-room-copy-20261024-151913`。
+- 顺手修正：profile `cordis.patch.yml` 顶部「改完需要完全重启」那句注释已过时，改成
+  「保存后约 2 秒由 HMR 重新组合」。
+
 ## 0.1.12 — 2026-10-24
 
 ### 白屏自愈：DSH 重启后房客浏览器拿着旧外壳时不再只能手动硬刷新

@@ -483,12 +483,31 @@ dsh-room/
 ├── test/live-ui.mjs       真浏览器验收（CDP：按钮/面板/tab/深色/toast）
 ├── test/mobile-ui.mjs     手机验收（CDP 移动仿真：视口/Cookie/触屏/剪贴板/dvh）
 ├── test/probe-*.mjs       诊断脚本（CDP 抓包 / 房客侧 API 与只读实测）
+├── tools/watch-plugin.ps1 开发用：存盘即触发 HMR 重新组合（免重启 DSH）
 ├── CHANGELOG.md
 ├── SECURITY.md
 └── README.md
 ```
 
-改 `lib/client.js` 后刷新页面即可；改 `index.mjs` / `lib/guard.mjs` 需要重载插件或重启 DSH。
+改 `lib/client.js` 后刷新页面（`Ctrl+R`）即可；改 `index.mjs` / `lib/guard.mjs` **也不用重启 DSH** ——
+`@deepseek-ai/dsh-hmr` 在 profile 上下文里默认启用（`root: []`），只要 profile 配置变化触发一次
+「重新组合」，它就会把 profile 目录下（含 `node_modules` 与已链接包目标）磁盘上变化的插件重新导入：
+
+```powershell
+# 常驻：盯住源码目录，存盘即触发重新组合（300ms 防抖）
+pwsh -File tools\watch-plugin.ps1 -RoomPort 8787
+
+# 只触发一次
+pwsh -File tools\watch-plugin.ps1 -Once
+```
+
+等价的手动动作：插件页把该插件开关关再开，或改写 profile 的 `cordis.patch.yml`
+（HMR 配置监听带 `awaitWriteFinish`，默认 2 秒写入稳定窗口，别立刻验证）。
+代价是被重载插件的内存状态会丢（房间需要重开），会话 / 工作区 / 模型上下文都保留；
+重载失败不会要求重启，插件会被标成 `failed` 并把错误显示在插件列表里，修好再触发一次。
+
+若 profile 里的插件是目录联接（`New-Item -ItemType Junction` → 本仓库），改代码就是改 DSH 加载的那份，
+不需要再复制到 `node_modules`。
 
 离线自测（不需要 DSH，也不需要浏览器）：
 
