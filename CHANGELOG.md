@@ -11,7 +11,7 @@
   `session event at seq N lacks an identified message`，**整个会话下次打不开**。
 - 真机中招：`session-bb816161`（杂项）、`session-c555cd98`（本插件会话）。已修：两处载荷
   （静默 inject / 房主召唤 followup）都补 `role:"user"` + `randomUUID()`，并加 3 组回归断言。
-- 新增工具：`tools/session-validate.mjs`（校验已落盘消息 + 列出收件箱待落盘的毒项）、
+- 新增工具：`tools/session-validate.mjs`（校验已落盘消息 + 按 splice 回放列出收件箱待落盘项）、
   `tools/session-inbox-fix.mjs`（给待落盘项补 role/id，默认干跑，写前备份）。
 
 **2. 房客发任何指令都被判 workspace-blocked（「这个目录房主没有开放」）**
@@ -27,6 +27,9 @@
   占 token、被模型看见、复制导出都带着。现在没有房客身份就不打标，整条路径直接跳过。
 - 房客页面照旧打标（那才需要「谁说的」）。胶囊仍然只出现在房客的消息上。
 
+- 收件箱复查（按 (target,start) 做 splice 回放，不只看 inserted）：38 个会话**没有**残留缺 role/id 的待落盘项；
+  事故时那几条早被 `removedCount` 消费掉了。教训写进工具注释：移除是独立的 spliced 事件，
+  只看「inserted 非空」的事件会误判成「还有地雷」。
 - 测试：七套（chat / schema / guard / attribute / sessioninfo / host / client）全绿；
   `sessioninfo` 是新增套件，覆盖离线读 cwd、多帧 zstd、畸形输入不抛错、`DSH_HOME` 覆盖。
 ## 0.3.5 — 2026-10-24

@@ -50,7 +50,7 @@ for (const workspace of readdirSync(root)) {
     let text = ''
     try { text = decodeSession(file) } catch { continue }
     scanned += 1
-    const pending = []
+    const queues = new Map()   // target -> [ { item, seq } ]，按 splice 回放还原
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
       let event
@@ -60,16 +60,37 @@ for (const workspace of readdirSync(root)) {
         const bad = !data || typeof data !== 'object' || typeof data.id !== 'string' || data.id === ''
         if (bad) problems.push({ dir: dir.slice(0, 24), kind: event.type, brief: JSON.stringify(data).slice(0, 120) })
       }
-      // 收件箱里待落盘的插入项：现在没坏，但会被原样 append 成 user/message
-      if (wantPending && event.type === 'agent/inbox/spliced' && Array.isArray(data && data.inserted)) {
-        for (const item of data.inserted) {
-          if (!item || typeof item.id !== 'string' || item.id === '' || item.role !== 'user') {
-            pending.push({ seq: event.seq, brief: JSON.stringify(item).slice(0, 120) })
-          }
+      /* 收件箱要**按 (target,start) 真做 splice 回放**才看得准：
+       * 「移除」不是插在插入项上的字段，而是另一条独立的 spliced 事件
+       *   { target, start, removedCount: 1, inserted: [] }
+       * 只看「inserted 非空」的事件、或去插入项里找 removedCount，永远看不到移除，
+       * 会把早已出队的项误报成「还躺着的地雷」（2026-10-24 我就在这里误判过一次）。 */
+      if (event.type === 'agent/inbox/spliced' && data && typeof data === 'object') {
+        const target = String(data.target || 'next-turn')
+        if (!queues.has(target)) queues.set(target, [])
+        const queue = queues.get(target)
+        const start = Number.isInteger(data.start) ? data.start : 0
+        const removedCount = Number.isInteger(data.removedCount) ? data.removedCount : 0
+        const inserted = Array.isArray(data.inserted) ? data.inserted : []
+        queue.splice(start, removedCount, ...inserted.map((item) => ({
+          item,
+          seq: event.seq,
+        })))
+      }
+    }
+    for (const [target, queue] of queues) {
+      for (const entry of queue) {
+        const item = entry.item
+        if (!item || typeof item.id !== 'string' || item.id === '' || item.role !== 'user') {
+          problems.push({
+            dir: dir.slice(0, 24),
+            kind: 'pending-inbox',
+            seq: entry.seq,
+            brief: target + ' 队列里还有一条缺 role/id 的待落盘项：' + JSON.stringify(item).slice(0, 100),
+          })
         }
       }
     }
-    for (const item of pending) problems.push({ dir: dir.slice(0, 24), kind: 'pending-inbox', seq: item.seq, brief: item.brief })
   }
 }
 

@@ -15,6 +15,13 @@
  *   node tools/session-inbox-fix.mjs                 # 干跑，只报告
  *   node tools/session-inbox-fix.mjs --apply         # 真写（先备份 .bak-<ms>）
  *   node tools/session-inbox-fix.mjs --apply <前缀>  # 只处理某个会话
+ *
+ * ⚠️ 判定「队列里到底还剩什么」不能只看 inserted：移除是**另一条独立的 spliced 事件**
+ *    `{ target, start, removedCount: 1, inserted: [] }`。必须按 (target, start) 真做
+ *    splice 回放（tools/session-validate.mjs 已经这么做）。否则会把早就出队的项当成
+ *    还在队里的「地雷」——2026-10-24 我们就这么误报过一次。
+ *    本工具只按「是否存在缺 role/id 的 inserted 项」补字段，改的是历史字节，
+ *    在项已出队的情况下无害但也无用；先用 validate 确认还剩没剩。
  */
 import { readdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
