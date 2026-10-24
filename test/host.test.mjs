@@ -570,6 +570,36 @@ assert.equal(viaList.json.pushed.skipped, 0, 'get 落空时要按 list 兜住')
 assert.ok(viaList.json.pushed.delivered + viaList.json.pushed.woke >= 1)
 agentRegistry.get = realGet
 
+// 休眠会话被点名：先让 DSH 把会话恢复出来（resolveAgent），再 followup —— 这是真机上
+// 「重启后会话都没在跑，@它没反应」的正解。
+liveAgents.delete('session-test')
+let resumed = 0
+const revived = makeAgent('session-test')
+agentRegistry.resolveAgent = async (id) => {
+  if (String(id) !== 'session-test') return { error: { code: 'session/not-found' } }
+  resumed += 1
+  liveAgents.set('session-test', revived)
+  return revived
+}
+const dormantWake = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, {
+  group: groupId,
+  text: '醒醒 @' + alias,
+})
+assert.equal(dormantWake.json.pushed.woke, 1, '点名休眠会话要恢复 + 唤醒')
+assert.equal(resumed, 1, '只对点名的那个会话做恢复')
+assert.equal(revived.calls.at(-1).how, 'followup')
+// 恢复不出 agent 时按跳过处理，不抛错、不影响别人收到
+liveAgents.delete('session-test')
+delete agentRegistry.resolveAgent
+const dormantFail = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, {
+  group: groupId,
+  text: '再点名一次 @' + alias,
+})
+assert.equal(dormantFail.status, 200)
+assert.equal(dormantFail.json.pushed.woke, 0)
+assert.ok(dormantFail.json.pushed.skipped >= 1)
+liveAgents.set('session-test', makeAgent('session-test'))
+
 // 8.6 房客昵称/头像 + 本地存档：重启后聊天记录与「谁是谁」都还在
 console.log('step: persist')
 const AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='

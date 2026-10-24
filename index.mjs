@@ -951,7 +951,8 @@ function setup(ctx, config) {
       from: { kind: 'system', id: 'room', name: '系统' },
       text: body,
     })
-    if (result && result.message) deliverChatMessage(groupId || 'lobby', result.message)
+    // 系统提示不投递（deliverChatMessage 里会直接返回 0），这里只保证不把异常抛给系统消息。
+    if (result && result.message) deliverChatMessage(groupId || 'lobby', result.message).catch(() => {})
     return result && result.message ? result.message : null
   }
 
@@ -974,6 +975,13 @@ function setup(ctx, config) {
   // 插件生产者的规范形态是 `plugin:<包名>`（DSH 内部 producerKind() 就这么生成；
   // 不认识但非空的 kind 会原样保留，不会被拒绝）。
   const PUSH_SOURCE = { kind: 'plugin:@sktian114/dsh-room' }
+
+  /** 一次投递最多等多久（毫秒）。点名唤醒可能要先把休眠会话恢复出来，给个上限别把发送方拖住；
+   *  超时只是「不再等结果」，后台投递仍会跑完并推进游标。 */
+  function deliverTimeoutMs() {
+    const custom = Number(process.env.DSH_ROOM_PUSH_TIMEOUT_MS)
+    return Number.isFinite(custom) && custom > 0 ? custom : 8000
+  }
 
 
   // `agents` 是 @deepseek-ai/dsh-agent-loop 提供的服务，不在本插件的 inject 声明里
@@ -1030,12 +1038,51 @@ function setup(ctx, config) {
       + '；要回话：room_chat_post group="' + group.id + '"）'
   }
 
+  /** 拿 agent 服务的注册表（三条来路都试），拿不到返回 null。 */
+  function agentRegistryOf() {
+    try {
+      return agentsRegistry
+        || (ctx && ctx.agents)
+        || (typeof ctx.get === 'function' ? ctx.get('agents') : null)
+        || null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 点名唤醒时，把「没在跑的会话」先让 DSH 恢复出来。
+   * DSH 的 AgentRegistry 上 `get()` 只认活着的实例，`resolveAgent(sessionId)` 才会去
+   * persistence 里把会话读回来、组装成活的 agent（返回 agent 或 `{ error }`）。
+   * 只有被点名/房主召唤才走这条 —— 恢复会话本身有成本，不能对全群做。
+   */
+  async function resolveDormantAgent(sessionId) {
+    const registry = agentRegistryOf()
+    if (!registry) return null
+    const resolve = registry.resolveAgent || registry.resolve
+    if (typeof resolve !== 'function') return null
+    try {
+      const resolved = await resolve.call(registry, String(sessionId))
+      const handle = (resolved && typeof resolved.followup === 'function') ? resolved
+        : (resolved && resolved.agent && typeof resolved.agent.followup === 'function') ? resolved.agent
+          : null
+      if (handle) say('info', '[' + NAME + '] 已恢复休眠会话 ' + sessionId + ' 以便点名唤醒')
+      else say('debug', '[' + NAME + '] 会话 ' + sessionId + ' 恢复不出活的 agent（点名跳过）')
+      return handle
+    } catch (error) {
+      say('warn', '[' + NAME + '] 恢复会话 ' + sessionId + ' 失败（点名未送达）：'
+        + (error && error.message ? error.message : error))
+      return null
+    }
+  }
+
   /**
    * 把一条群消息投递到群里每个在线 agent 的收件箱。
    * 系统提示（谁进房/离房/被拉进群）不投递：那不是「有人跟你说话」。
-   * @returns {{ delivered: number, woke: number, skipped: number }}
+   * 被点名但会话已休眠的，先让 DSH 把会话恢复出来再唤醒（见 resolveDormantAgent）。
+   * @returns {Promise<{ delivered: number, woke: number, skipped: number }>}
    */
-  function deliverChatMessage(groupId, message) {
+  async function deliverChatMessage(groupId, message) {
     const stats = { delivered: 0, woke: 0, skipped: 0 }
     if (!PUSH_ENABLED || !message) return stats
     if (message.from && message.from.kind === 'system') return stats
@@ -1045,13 +1092,15 @@ function setup(ctx, config) {
       if (record.id === message.from.id) continue          // 自己说的不推给自己
       const cursor = chat.cursorOf(record.id, groupId)
       if (message.seq <= cursor) continue                  // 已经读过/推过
-      const handle = agentHandleOf(record.id)
-      if (!handle) { stats.skipped += 1; continue }        // 会话不在了：等它自己 read
       const mentioned = Array.isArray(message.mentions) && message.mentions.includes(record.id)
       const payload = { content: [{ type: 'text', text: pushText(group, message, cursor) }], source: PUSH_SOURCE }
+      const handle = agentHandleOf(record.id)
+      if (!handle && !mentioned) { stats.skipped += 1; continue }  // 没在跑又没被点名：等它自己 read
       try {
-        if (mentioned && typeof handle.followup === 'function') {
-          handle.followup(payload)                         // 点名 = 唤醒
+        if (mentioned) {
+          const target = handle || await resolveDormantAgent(record.id)
+          if (!target || typeof target.followup !== 'function') { stats.skipped += 1; continue }
+          await target.followup(payload)                   // 点名 = 唤醒（必要时先恢复会话）
           stats.woke += 1
         } else if (typeof handle.inject === 'function') {
           handle.inject(payload)                           // 静默：不唤醒
@@ -1790,7 +1839,14 @@ function setup(ctx, config) {
           return
         }
         // 有人说话 → 立刻投递到群里每个在线 agent（静默 inject；被点名的才 followup 唤醒）
-        const pushed = deliverChatMessage(groupId, result.message)
+        // 点名唤醒可能要先把休眠会话恢复出来（秒级），所以给个上限，别把发送方拖住太久。
+        const pushed = await Promise.race([
+          deliverChatMessage(groupId, result.message),
+          new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ delivered: 0, woke: 0, skipped: 0, timeout: true }), deliverTimeoutMs())
+            if (timer && typeof timer.unref === 'function') timer.unref()
+          }),
+        ])
         sendJson(res, 200, { ok: true, message: result.message, mentions: result.message.mentions || [], pushed }, cors)
         return
       }
@@ -1882,7 +1938,8 @@ function setup(ctx, config) {
           sendJson(res, 400, { ok: false, error: 'not-member' }, cors)
           return
         }
-        const handle = agentHandleOf(agentId)
+        // 召唤 = 显式唤醒，会话休眠也先把 DSH 把它恢复出来（跟点名同一条路）。
+        const handle = agentHandleOf(agentId) || await resolveDormantAgent(agentId)
         if (!handle || typeof handle.followup !== 'function') {
           sendJson(res, 409, { ok: false, error: 'offline' }, cors)
           return
@@ -1902,8 +1959,8 @@ function setup(ctx, config) {
           sendJson(res, 500, { ok: false, error: 'wake-failed', detail: String((error && error.message) || error) }, cors)
           return
         }
-        const lastSeq = group && group.messages.length ? group.messages[group.messages.length - 1].seq : cursor
-        if (lastSeq > 0) chat.setCursor(agentId, groupId, lastSeq)
+        // 注意：这里**不**推进未读游标 —— 召唤不是「替它读过了」，让它自己 read 时还能看见
+        // 召唤之前的上下文（推进游标会让它默认 read 读到空）。
         say('info', '[' + NAME + '] 召唤 agent：' + agentId + ' @ ' + groupId)
         sendJson(res, 200, { ok: true, group: groupId, agentId }, cors)
         return
@@ -2343,7 +2400,13 @@ function setup(ctx, config) {
             to: splitTargets(args && args.to),
           })
           if (result.error) return { ok: false, error: result.error, group: groupId }
-          const pushed = deliverChatMessage(groupId, result.message)
+          const pushed = await Promise.race([
+            deliverChatMessage(groupId, result.message),
+            new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ delivered: 0, woke: 0, skipped: 0, timeout: true }), deliverTimeoutMs())
+              if (timer && typeof timer.unref === 'function') timer.unref()
+            }),
+          ])
           return { ok: true, group: groupId, seq: result.message.seq, mentions: result.message.mentions || [], pushed }
         },
       },
