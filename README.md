@@ -135,6 +135,19 @@ agent 侧则通过 `room_chat_members` 拿到人员表（身份 id、在线状�
 再不行浮出「重新加载 / 清空本页数据并重载」。控制台会打印
 `房客页内容：N 字`、`被我们隐藏的元素`、`nav 清单` 三行，白屏时看它们即可定位。
 
+0.1.15 两件事：
+
+- **身份胶囊终于会出现**。之前只在 HTTP `/api/session/prompt` 上给房客的指令加
+  `〔@昵称〕` 标记，可 DSH 0.2.1 的会话请求**全走同一条 WebSocket**
+  （`/api/remote.mux` 的 `client-request`），既不经过 HTTP 路由，也不经过 `window.fetch`
+  —— 标记从来没被加上过，所以胶囊一直不显示（`data-dsh-room-author="ready"` 只说明
+  规则和插槽挂好了）。现在改在 `WebSocket.prototype.send` 上改写 `session/prompt` 帧，
+  控制台可用 `window.__dshRoomMarkedCount` / `window.__dshRoomLastMarked` 自查。
+- **左下角账号区整行换成房客身份**。不再把 DSH 的账号区整块 `display:none`，而是直接
+  住进 DSH 那个「已登录 DeepSeek」按钮里（沿用它的 44px 行高、6px 内边距、12px 圆角、
+  14px 字号与主题色），只留「圆形头像首字 + 昵称」；点击开的是「我的身份」小面板，
+  不会弹出房主的账号菜单。侧栏折叠时和 DSH 原样一致，只剩一个圆形头像纽。
+
 深色主题下自动跟随 DSH 变量：
 
 ![聊天面板深色](preview/chat-panel-dark.png)

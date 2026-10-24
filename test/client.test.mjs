@@ -721,6 +721,40 @@ assert.deepEqual(profileApi.readGuestProfile(), { name: '阿鱼', avatar: '🦊'
 assert.equal(meChip.title.indexOf('阿鱼') >= 0, true, '按钮立刻跟着改名')
 assert.equal(globalThis.document.querySelector('[data-dsh-room-me-pop]'), null, '保存后关闭面板')
 
+// ── 「这条是谁说的」标记：DSH 0.2.1 的 prompt 走 WebSocket，不走 HTTP / fetch ──
+const promptFrame = JSON.stringify({
+  type: 'client-request', rpcId: 'rpc-1', method: 'session/prompt',
+  payload: { args: { request: { requestId: 'req-1', sessionId: 'sess-1', mode: 'queue', content: [{ type: 'text', text: '你好' }] } } },
+})
+const markedFrame = profileApi.markPromptFrame(promptFrame, '访客6229')
+assert.ok(markedFrame, 'prompt 帧要被认出来并加标记')
+const markedPayload = JSON.parse(markedFrame)
+assert.equal(markedPayload.payload.args.request.content[0].text, '〔@访客6229〕\n你好', '标记要加在第一段文本前面')
+assert.equal(markedPayload.method, 'session/prompt', '其它字段原样保留')
+assert.equal(markedPayload.payload.args.request.sessionId, 'sess-1')
+assert.equal(JSON.parse(promptFrame).payload.args.request.content[0].text, '你好', '原字符串不能被改坏')
+assert.equal(profileApi.markPromptFrame(promptFrame, ''), null, '没有昵称就不打标记')
+assert.equal(profileApi.markPromptFrame(markedFrame, '张三'), null, '已经有标记就不重复加')
+assert.equal(profileApi.markPromptFrame(JSON.stringify({ type: 'client-request', method: 'session/list', payload: { args: {} } }), '张三'), null, '别的 RPC 一律不碰')
+assert.equal(profileApi.markPromptFrame('{坏 json', '张三'), null, '坏 JSON 原样放过，不能把发送弄坏')
+assert.equal(profileApi.markPromptFrame(null, '张三'), null, '非字符串原样放过')
+
+// ── 账号行模式：按钮住进 DSH 的账号按钮里，只藏它原来的内容，不扫兄弟节点 ──
+const accountTrigger = domEl('BUTTON', 'xyz_trigger')
+const oldAvatar = accountTrigger.appendChild(domEl('SPAN', 'xyz_avatar'))
+const oldLabel = accountTrigger.appendChild(domEl('SPAN', 'xyz_label'))
+const accountChip = accountTrigger.appendChild(domEl('BUTTON', 'dsh-room-me'))
+accountChip.setAttribute('data-account', '1')
+const settingsWrap = domEl('DIV', 'xyz_settingsArea')
+settingsWrap.appendChild(accountTrigger)
+bodyEl.appendChild(settingsWrap)
+profileApi.tidyGuestSidebar(accountChip)
+assert.equal(oldAvatar.getAttribute('data-dsh-room-hidden'), '1', '账号行里原来的头像要藏起来')
+assert.equal(oldLabel.getAttribute('data-dsh-room-hidden'), '1', '账号行里原来的「已登录 DeepSeek」要藏起来')
+assert.equal(accountChip.getAttribute('data-dsh-room-hidden'), null, '我们自己的按钮不许被藏')
+assert.equal(accountTrigger.getAttribute('data-dsh-room-hidden'), null, '账号按钮本身不许被藏')
+assert.equal(settingsWrap.getAttribute('data-dsh-room-hidden'), null, '账号区容器不许被藏')
+
 // 房主页：读不到房客记录时不会乱插按钮
 globalThis.localStorage.removeItem('dsh-room.guest')
 globalThis.document.querySelectorAll = () => []

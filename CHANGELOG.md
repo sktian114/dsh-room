@@ -1,5 +1,36 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.1.15 — 2026-10-24
+
+### 会话里「这条是谁发的」胶囊终于会出现（真因：prompt 走 WebSocket，不走 HTTP）
+
+- **真因**：0.1.7 给房客指令加 `〔@昵称〕` 标记，只在两处挂钩 —— 代理的 HTTP
+  `/api/session/prompt` 与页面里的 `window.fetch` 兜底。可 DSH 0.2.1 的会话请求**全部走
+  同一条 WS**（`/api/remote.mux` 的 `client-request` 帧，方法 `session/prompt`，参数在
+  `payload.args.request.content[]`），两条老路都碰不到它。证据：宿主会话文件里
+  `〔@` 命中 0 次；页面上 `data-dsh-room-author="ready"`（规则与插槽都挂好了）但
+  `chips=0`。所以渲染那半边一直是对的，缺的是数据。
+- **修法**：房客页在 `WebSocket.prototype.send` 上包一层，`session/prompt` 帧的第一段
+  文本前面补标记（已有标记不重复加，坏 JSON 原样放过），再交给原生 send。
+  诊断出口：`window.__dshRoomMarkedCount`、`window.__dshRoomLastMarked`、
+  `window.__dshRoomMarkPrompt(text)`。
+- **验证**：单测覆盖标记注入/去重/放行；真页面里用一条真实 `session/prompt` 帧调用，
+  `__dshRoomMarkedCount` 0 → 1，`lastMarked` 里能看到标记已插入。
+- **未验证**：胶囊在会话里的实际渲染 —— 自动化点发送没能把消息真正发出去（Lexical
+  编辑器 + 权限链路的自动化限制），需要房客手动发一条消息确认。
+
+### 左下角账号区：整行换成房客身份，风格与 DSH 一致
+
+- 以前是「把 DSH 账号区 `display:none`，再在页脚另挂一个自己的胶囊」，看着像贴上去的。
+- 现在不打藏账号区，而是**住进 DSH 自己的账号按钮**（`[class*="settingsArea"] button`，
+  那个「已登录 DeepSeek」行）：只留 DSH 原按钮当外框，行高 44px、内边距 6px、圆角 12px、
+  字号 14px、颜色继承，全部跟着 DSH 走；里面换成「圆形头像首字 + 昵称」。
+- 点击开「我的身份」面板（只改本机昵称/头像），不再弹房主账号菜单（已摘掉它的
+  `aria-haspopup`）；侧栏折叠时与原版一致，只剩圆形头像。
+- `tidyGuestSidebar()` 增加账号行模式：只藏该按钮内原有内容，不再扫兄弟节点（这条链一直
+  通到侧栏根，扫错就是整页空白）；1.5 秒清理会把账号行整条链上的误标摘掉。
+- 单测：账号行模式下原头像/原标签被藏、我们的按钮与容器不被藏。
+
 ## 0.1.14 — 2026-10-24
 
 ### 修掉「房客页整页空白，只剩左下角一颗按钮」的真因

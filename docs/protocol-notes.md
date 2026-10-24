@@ -34,6 +34,24 @@
 - unary 只能 HTTP，stream 只能 WS，互走会被拒（`gateway/signature-invalid`）。
 - 绕过 gateway 的精确路由：`GET /api/file?path=<绝对路径>`、`GET /connect`、`/plugins/...`、插件自己的 `/room/api/*`。
 
+### 发消息不走 HTTP（0.2.1 实测，踩过）
+
+`session/prompt`（也就是"发一条指令"）在前端是走 **WS mux** 的 `client-request` 帧：
+
+```
+{"type":"client-request","rpcId":"...","method":"session/prompt",
+ "payload":{"args":{"request":{"requestId":"...","sessionId":"...","mode":"queue|steer",
+                              "content":[{"type":"text","text":"..."}]}}}}
+```
+
+- 请求对象字段见 `@deepseek-ai/dsh-api-session-controller/lib/typert.remote-client.js`
+  （`requestId` / `sessionId` / `mode` / `content` / 可选 `clientTimeZone`）。
+- **没有** HTTP `/api/session/prompt` 这条路，也**不经过** `window.fetch` ——
+  想改写用户消息内容（例如给房客指令加作者标记），唯一位置是
+  `WebSocket.prototype.send`。
+- 因此房客页的 `lib/client.js` 在 `send` 上改写 `session/prompt` 帧；代理那边只在
+  历史遗留的 HTTP 路径上留了兜底。
+
 ## 会泄漏工作区/对话的端点
 
 | 端点 | 帧/响应内容 | 泄漏字段 |

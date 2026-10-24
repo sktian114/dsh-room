@@ -231,6 +231,52 @@ if (args.has('rootcss')) {
   console.log('命中 #root 的样式规则：' + JSON.stringify(ruleHits, null, 2))
 }
 
+if (args.has('exprFile')) {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(String(args.get('exprFile')), 'utf8')
+  const value = await evaluate(source)
+  console.log('expr => ' + JSON.stringify(value, null, 2).slice(0, 6000))
+}
+if (args.has('expr')) {
+  const value = await evaluate(String(args.get('expr')))
+  console.log('expr => ' + JSON.stringify(value, null, 2).slice(0, 4000))
+}
+
+if (args.has('type')) {
+  // 真键盘输入：先聚焦输入框，再用 CDP 打字 + 回车（合成事件唤不醒 React 的草稿状态）
+  const focused = await evaluate(`(() => { const el = document.querySelector('[contenteditable="true"]'); if (!el) return false; el.focus(); return true })()`)
+  if (focused) {
+    // Lexical 编辑器：必须逐字输入（char 事件），insertText 只会改 DOM 不动编辑器状态
+    for (const ch of String(args.get('type'))) {
+      await send('Input.dispatchKeyEvent', { type: 'char', text: ch, unmodifiedText: ch })
+      await sleep(30)
+    }
+    await sleep(600)
+    const typedText = await evaluate(`(() => { const el = document.querySelector('[contenteditable="true"]'); return String((el && el.textContent) || '').slice(0, 40) })()`)
+    console.log('editorText => ' + typedText)
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: String.fromCharCode(13), unmodifiedText: String.fromCharCode(13), windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
+    await sleep(500)
+    // 打完字 React 的草稿状态就有了，直接点发送按钮最稳
+    const clicked = await evaluate(`(() => {
+      const buttons = Array.from(document.querySelectorAll('button')).filter((b) => /发送|send/i.test(String(b.getAttribute('aria-label') || b.textContent || '')));
+      const target = buttons[buttons.length - 1];
+      if (!target) return 'no-button';
+      if (target.disabled) return 'disabled';
+      target.click();
+      return 'clicked';
+    })()`)
+    console.log('sendButton => ' + clicked)
+    await sleep(Number(args.get('typeWait') || 6000))
+  }
+  const chips = await evaluate(`(() => Array.from(document.querySelectorAll('.dsh-room-author')).map((el) => String(el.textContent || '').trim()))()`)
+  console.log('typed => focused=' + focused + ' chips=' + JSON.stringify(chips))
+}
+if (args.has('html')) {
+  const selector = String(args.get('html'))
+  const html = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? el.outerHTML.slice(0, 4000) : '(not found)' })()`)
+  console.log('html ' + selector + ' => ' + html)
+}
 if (args.has('dump')) {
   const dump = await evaluate(`(() => {
     const out = {};
