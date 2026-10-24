@@ -537,4 +537,65 @@ sentBody = null
 await globalThis.window.fetch('/api/session/list', { method: 'POST', headers: { 'content-type': 'application/json' }, body: bodyOf('不该被改') })
 assert.equal(JSON.parse(sentBody).payload.args.request.content[0].text, '不该被改')
 
+// 9. 房客页：只留工作区 + 左下角改成「我的身份」（昵称/头像只存本地）
+const profileApi = moduleExports.__test
+assert.equal(profileApi.readGuestProfile(), null)
+profileApi.writeGuestProfile({ name: '小鹿', avatar: '🦊' })
+assert.deepEqual(profileApi.readGuestProfile(), { name: '小鹿', avatar: '🦊' })
+assert.equal(profileApi.guestDisplayName(), '小鹿', '本地昵称优先')
+assert.equal(profileApi.isGuestPage(), false, '没加入房间时不是房客页')
+// 房客身份（模拟 saveGuest 写进去的记录）
+globalThis.localStorage.setItem('dsh-room.guest', JSON.stringify({ addr: 'http://172.16.1.130:8787', token: 'tok', name: '访客6105' }))
+assert.equal(profileApi.isGuestPage(), true)
+globalThis.localStorage.removeItem(profileApi.STORAGE_PROFILE)
+assert.equal(profileApi.guestDisplayName(), '访客6105', '没改过本地昵称就用房间里的名字')
+assert.equal(moduleExports.__test.localIdentityName(), '访客6105', '指令标记也跟着本地昵称')
+profileApi.writeGuestProfile({ name: '小鹿', avatar: '🦊' })
+assert.equal(moduleExports.__test.localIdentityName(), '小鹿')
+
+// 停用侧栏其它入口：只留工作区 + 我们自己的按钮
+function fakeEl(tag) {
+  return {
+    tagName: tag,
+    nodeType: 1,
+    attrs: {},
+    children: [],
+    parentElement: null,
+    setAttribute(key, value) { this.attrs[key] = value },
+    querySelectorAll() { return this.navs || [] },
+    append(child) { child.parentElement = this; this.children.push(child); return child },
+  }
+}
+const column = fakeEl('DIV')
+const footArea = column.append(fakeEl('DIV'))
+const actions = footArea.append(fakeEl('DIV'))
+const mine = actions.append(fakeEl('BUTTON'))
+const pluginButton = actions.append(fakeEl('BUTTON'))
+const settingsArea = footArea.append(fakeEl('DIV'))
+const nav = fakeEl('NAV')
+column.navs = [nav]
+globalThis.document.documentElement = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v } }
+profileApi.tidyGuestSidebar(mine)
+assert.equal(pluginButton.attrs['data-dsh-room-hidden'], '1', '页脚里的插件入口要藏起来')
+assert.equal(settingsArea.attrs['data-dsh-room-hidden'], '1', '左下角的房主账号/设置区要藏起来')
+assert.equal(nav.attrs['data-dsh-room-hidden'], '1', '侧栏的面板列表（插件/设置…）要藏起来')
+assert.equal(mine.parentElement, actions, '自己的按钮留在原位')
+assert.equal(mine.attrs['data-dsh-room-hidden'], undefined)
+assert.equal(globalThis.document.documentElement.attrs['data-dsh-room-guest'], '1', '给 CSS 一个开关')
+
+// 注册到 sidebar.footer.action，且只在房客页渲染
+let footerSlot = null
+const guestCtx = {
+  slots: {
+    inject(name, factoryFn) { footerSlot = { name, factoryFn } },
+    register(spec, component) { return { spec, component } },
+  },
+}
+assert.equal(profileApi.installGuestIdentity(guestCtx), true)
+assert.equal(footerSlot.name, 'sidebar.footer.action')
+const footerRegistered = footerSlot.factoryFn()
+assert.equal(footerRegistered.component, profileApi.GuestIdentity)
+assert.equal(footerRegistered.spec.name, 'sidebar.footer.action')
+assert.equal(profileApi.installGuestIdentity({ slots: null }), false, '没有插槽时安静失败')
+
 console.log('dsh-room client smoke test: PASS')
