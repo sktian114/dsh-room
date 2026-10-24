@@ -524,6 +524,14 @@ const pushedSource = refactorAgent.calls[0].payload.source
 assert.equal(pushedSource.kind, 'plugin:@sktian114/dsh-room')
 assert.notEqual(pushedSource.kind, 'plugin', '退役的 plugin 包装会被 DSH 拒收')
 assert.equal('plugin' in pushedSource, false, '不能带 plugin 字段（那是 v3 的写法）')
+// 载荷还必须是 DSH 的**完整消息**形态：dsh-agent-loop 的 step() 直接把它当
+// user/message 的 data 落盘（不会补 role/id）。缺了会写出过不了校验的会话日志，
+// 下次加载整体报「session event at seq N lacks an identified message」，会话打不开。
+// 真机事故：session-bb816161 / session-c555cd98 因此损坏（2026-10-24）。
+const pushedPayload = refactorAgent.calls[0].payload
+assert.equal(pushedPayload.role, 'user', '载荷必须有 role:"user"')
+assert.equal(typeof pushedPayload.id, 'string', '载荷必须有字符串 id')
+assert.ok(pushedPayload.id.length > 0, 'id 不能为空')
 
 // 同一条消息不会重复投递：游标推进后再发新消息只推新的那条
 const secondSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '第二条' })
@@ -536,6 +544,10 @@ const wake = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestT
 assert.equal(wake.json.pushed.woke, 1, '点名要唤醒')
 assert.equal(wake.json.mentions.includes('session-test'), true)
 assert.equal(refactorAgent.calls.at(-1).how, 'followup', '点名走 followup')
+// 唤醒路径的载荷同样必须具备 role/id，否则被唤醒的会话会被写坏
+const wokePayload = refactorAgent.calls.at(-1).payload
+assert.equal(wokePayload.role, 'user', '点名唤醒的载荷必须有 role:"user"')
+assert.ok(typeof wokePayload.id === 'string' && wokePayload.id.length > 0, '点名唤醒的载荷必须有 id')
 
 // 离线会话（注册表里没有）跳过，不影响其它人收到
 liveAgents.delete('session-test')
@@ -554,6 +566,10 @@ liveAgents.set('session-test', makeAgent('session-test'))
 const woke = await post('/room/api/host/chat/wake', { group: groupId, agentId: 'session-test' }, base)
 assert.equal(woke.status, 200)
 assert.equal(liveAgents.get('session-test').calls.at(-1).how, 'followup', '召唤要唤醒')
+// 房主召唤走的是另一处 followup，同样要求完整消息形态
+const summonPayload = liveAgents.get('session-test').calls.at(-1).payload
+assert.equal(summonPayload.role, 'user', '召唤的载荷必须有 role:"user"')
+assert.ok(typeof summonPayload.id === 'string' && summonPayload.id.length > 0, '召唤的载荷必须有 id')
 const wakeMissing = await post('/room/api/host/chat/wake', { group: groupId, agentId: 'session-nobody' }, base)
 assert.equal(wakeMissing.status, 400)
 

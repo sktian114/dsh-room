@@ -28,6 +28,41 @@ if (!joined || !joined.ok) {
   process.exit(1)
 }
 const cookie = 'dsh_room_token=' + joined.token
+
+/** 先像真页面那样拉一次会话列表：代理会顺手把「会话 → 工作区路径」记进守卫。 */
+const listBody = {
+  type: 'client-request',
+  rpcId: 'r-list-' + Date.now(),
+  method: 'session/list',
+  payload: { args: {} },
+}
+const listResponse = await fetch(room + '/api/session/list', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', cookie },
+  body: JSON.stringify(listBody),
+})
+const listText = await listResponse.text()
+let listed = []
+try {
+  const parsed = JSON.parse(listText)
+  const items = parsed && parsed.result && parsed.result.value && parsed.result.value.items
+  listed = Array.isArray(items) ? items : []
+} catch { /* 忽略 */ }
+const firstItem = listed[0] || null
+const cwdOf = (item) => (item && (item.cwd
+  || (item.projections && item.projections.values && item.projections.values.workingDirectory))) || ''
+const targetSession = sessionId || (firstItem && (firstItem.sessionId
+  || (firstItem.projections && firstItem.projections.values && firstItem.projections.values.sessionId))) || ''
+console.log(JSON.stringify({
+  step: 'list',
+  status: listResponse.status,
+  count: listed.length,
+  target: targetSession,
+  firstItemKeys: firstItem ? Object.keys(firstItem) : [],
+  firstItemCwd: cwdOf(firstItem),
+  snippet: listText.slice(0, 160),
+}, null, 2))
+
 const body = {
   type: 'client-request',
   rpcId: 'r-probe-' + Date.now(),
@@ -36,7 +71,7 @@ const body = {
     args: {
       request: {
         requestId: 'q-' + Date.now(),
-        sessionId,
+        sessionId: targetSession,
         mode: 'queue',
         content: [{ type: 'text', text: mark ? '〔@' + name + '〕\n' + text : text }],
       },

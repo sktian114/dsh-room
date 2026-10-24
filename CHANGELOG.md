@@ -1,5 +1,34 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.6 — 2026-10-24
+
+### 两件会「让会话打不开 / 让房客发不出话」的 P0，加一条污染修正
+
+**1. 房间投递的消息缺 role/id，把会话日志写坏了（真机事故）**
+- `followup` / `inject` 收的必须是 DSH 的**完整消息** `{ role, id, content, source }`：
+  `dsh-agent-loop` 会把它原样 `session.append("user/message", …)` 落盘，不补字段；
+  `dsh-session` 又要求 data 的 `id` 非空、`role === "user"`。缺了就抛
+  `session event at seq N lacks an identified message`，**整个会话下次打不开**。
+- 真机中招：`session-bb816161`（杂项）、`session-c555cd98`（本插件会话）。已修：两处载荷
+  （静默 inject / 房主召唤 followup）都补 `role:"user"` + `randomUUID()`，并加 3 组回归断言。
+- 新增工具：`tools/session-validate.mjs`（校验已落盘消息 + 列出收件箱待落盘的毒项）、
+  `tools/session-inbox-fix.mjs`（给待落盘项补 role/id，默认干跑，写前备份）。
+
+**2. 房客发任何指令都被判 workspace-blocked（「这个目录房主没有开放」）**
+- 根因是**守卫状态没接上**：`index.mjs` 传的是 `sessionModes`，而 `lib/guard.mjs` 读的是
+  `sessionPaths` → 跨连接共享的那份 Map 从来没生效过，每个 TCP 连接各拿一份空表。
+  房客的会话列表拉在 A 连接、发指令走 B 连接，于是「这条会话属于哪个工作区」永远查不到 → 一律拒绝。
+- 修：统一成 `sessionPaths` 并跨连接共享；再加一手宿主侧兜底 —— 守卫没学过这条会话时，
+  直接从活的 agent（`session.header.cwd`）或磁盘上的会话头（`lib/sessioninfo.mjs`）读出 cwd 补给它。
+  这样不依赖界面是否先拉过列表。「路径」仍然每次按当前策略现算，权限收紧立刻生效。
+
+**3. 房主自己的话不再打 `〔@房主〕`（污染消除）**
+- 以前没有房客身份时 `localIdentityName()` 兜底成「房主」，于是房主每发一条，正文前就多一行标记：
+  占 token、被模型看见、复制导出都带着。现在没有房客身份就不打标，整条路径直接跳过。
+- 房客页面照旧打标（那才需要「谁说的」）。胶囊仍然只出现在房客的消息上。
+
+- 测试：七套（chat / schema / guard / attribute / sessioninfo / host / client）全绿；
+  `sessioninfo` 是新增套件，覆盖离线读 cwd、多帧 zstd、畸形输入不抛错、`DSH_HOME` 覆盖。
 ## 0.3.5 — 2026-10-24
 
 ### 关掉「裸 resume 恢复休眠会话」这条会弄坏回合的路

@@ -28,12 +28,13 @@ import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, hostname, homedir } from 'node:os'
 import { readFileSync, writeFileSync, statSync, readdirSync, mkdirSync } from 'node:fs'
 import { join, resolve, sep, basename, dirname } from 'node:path'
-import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
 import { createGuestGuard, tokenFromCookie } from './lib/guard.mjs'
 import { createFrameTransformer } from './lib/frames.mjs'
 import { createChatStore } from './lib/chat.mjs'
 import { denyBody } from './lib/deny.mjs'
 import { markPromptBody } from './lib/attribute.mjs'
+import { promptSessionId, cwdFromSessionFile } from './lib/sessioninfo.mjs'
 
 const NAME = 'dsh-room'
 // 版本号以 package.json 为唯一来源，避免发版时两处不一致。
@@ -528,13 +529,21 @@ function setup(ctx, config) {
   chat.restore(store.chat)
   chat.ensureLobby('大厅')
 
-  // 每个房客 TCP 连接一份守卫状态（streamId→端点、workspaceId→路径 的对应关系）
+  // 每个房客 TCP 连接一份守卫状态（streamId→端点），但「工作区路径」「会话→路径」必须
+  // **跨连接共享**：房客的列表拉在 A 连接、发指令在 B 连接是常态，各存各的就会
+  // 一律判成 workspace-blocked（真机症状：房客发什么都弹「这个目录房主没有开放」）。
   const sharedWorkspaces = new Map()
+  const sharedSessionPaths = new Map()
   const guards = new WeakMap()
   function guardFor(socket) {
     let guard = guards.get(socket)
     if (!guard) {
-      guard = createGuestGuard({ isBlockedPath, modeForPath, workspaces: sharedWorkspaces, sessionModes: sharedSessionModes })
+      guard = createGuestGuard({
+        isBlockedPath,
+        modeForPath,
+        workspaces: sharedWorkspaces,
+        sessionPaths: sharedSessionPaths,
+      })
       guards.set(socket, guard)
     }
     return guard
@@ -543,7 +552,25 @@ function setup(ctx, config) {
   // 房客新建的会话：代理登记 sessionId → 房主策略对应的权限预设，
   // 在 session/created 时钉死（只读 / 仅工作区可写 / 完全权限）。
   const guestSessions = new Map()
-  const sharedSessionModes = new Map()
+
+  /* 会话 → 工作区路径 的兜底来源：先问活着的 agent，再翻磁盘上的会话头。
+   * 只在守卫还没学到这条会话时才查，结果缓存 60 秒。实现见 lib/sessioninfo.mjs（有单测）。 */
+  const sessionCwdCache = new Map()
+  async function sessionCwdOf(sessionId) {
+    const key = String(sessionId || '')
+    if (!key) return ''
+    const cached = sessionCwdCache.get(key)
+    if (cached && Date.now() - cached.at < 60_000) return cached.cwd
+    let cwd = ''
+    try {
+      const handle = await agentHandleOf(key)
+      const header = handle && handle.session && handle.session.header
+      if (header && header.cwd) cwd = String(header.cwd)
+    } catch { /* 忽略 */ }
+    if (!cwd) cwd = cwdFromSessionFile(key)
+    sessionCwdCache.set(key, { cwd, at: Date.now() })
+    return cwd
+  }
 
   /* ── 拒绝理由 → 房客看得懂的话 ──
    * 文案与 code 在 lib/deny.mjs（纯数据、可单测）；客户端 lib/client.js 按 code 弹提示。
@@ -1123,7 +1150,18 @@ function setup(ctx, config) {
       const cursor = chat.cursorOf(record.id, groupId)
       if (message.seq <= cursor) continue                  // 已经读过/推过
       const mentioned = Array.isArray(message.mentions) && message.mentions.includes(record.id)
-      const payload = { content: [{ type: 'text', text: pushText(group, message, cursor) }], source: PUSH_SOURCE }
+      // 载荷必须是 DSH 的**完整消息**形态（role + id + content + source）。
+      // 依据：dsh-agent-loop 的 step() 直接把这个对象当 user/message 的 data 落盘
+      // （agent-loop.js:1069/1072 `session.append("user/message", message, …)`），
+      // 不会补 role/id。缺了会写出一个过不了校验的会话日志，下次加载整体报
+      // 「session event at seq N lacks an identified message」，会话就此打不开。
+      // 2026-10-24 真机事故：会话 session-bb816161 / session-c555cd98 因此损坏。
+      const payload = {
+        role: 'user',
+        id: randomUUID(),
+        content: [{ type: 'text', text: pushText(group, message, cursor) }],
+        source: PUSH_SOURCE,
+      }
       const handle = agentHandleOf(record.id)
       if (!handle && !mentioned) { stats.skipped += 1; continue }  // 没在跑又没被点名：等它自己 read
       try {
@@ -1559,9 +1597,20 @@ function setup(ctx, config) {
         }
         chunks.push(chunk)
       })
-      req.on('end', () => {
+      req.on('end', async () => {
         if (aborted) return
         const text = Buffer.concat(chunks).toString('utf8')
+        // 房客的指令要先知道「这条会话属于哪个工作区」才判得了权限。
+        // 映射平时靠 session/list 回执与 WS 的 workspace 帧学，但页面上任何一步没走到
+        // （换了连接、还没拉列表、列表接口形状变了）就会一路上被判 workspace-blocked ——
+        // 房客看到的就是「这个目录房主没有开放」。这里补一手：直接从宿主侧问出 cwd。
+        if (guest && pathname === '/api/session/prompt') {
+          const target = promptSessionId(text)
+          if (target && !guest.sessionPath(target)) {
+            const cwd = await sessionCwdOf(target)
+            if (cwd) guest.rememberSessionMode(target, cwd)
+          }
+        }
         const verdict = guest.judgeBody(pathname, text)
         if (verdict && verdict.deny) {
           // 用 200 + 失败信封，房客才会看到中文说明而不是 HTTP 403 的默认报错
@@ -1985,6 +2034,9 @@ function setup(ctx, config) {
         const cursor = chat.cursorOf(agentId, groupId)
         try {
           handle.followup({
+            // 同上：必须是完整消息，缺 role/id 会把被唤醒的会话写坏。
+            role: 'user',
+            id: randomUUID(),
             content: [{
               type: 'text',
               text: '【房主召唤】群里有人找你。先 room_chat_read group="' + groupId + '" since=' + cursor

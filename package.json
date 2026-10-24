@@ -1,6 +1,6 @@
 {
   "name": "@sktian114/dsh-room",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "DSH 房间联机：同一组网内把 DSH 工作台共享给好友，手机浏览器直接加入；支持工作区封锁 / 只读 / 仅工作区可写 / 完全权限，并保留房主审批权。",
   "type": "module",
@@ -35,7 +35,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/chat.test.mjs && node test/schema.test.mjs && node test/guard.test.mjs && node test/attribute.test.mjs && node test/host.test.mjs && node test/client.test.mjs",
+    "test": "node test/chat.test.mjs && node test/schema.test.mjs && node test/guard.test.mjs && node test/attribute.test.mjs && node test/sessioninfo.test.mjs && node test/host.test.mjs && node test/client.test.mjs",
     "preview": "node test/render-preview.mjs"
   },
   "keywords": [
