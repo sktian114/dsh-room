@@ -2350,6 +2350,25 @@ function setup(ctx, config) {
       return { id, title: title || (id ? id.slice(0, 12) : 'agent') }
     }
 
+    /** 现有 DSH 会话 id 集合（拿来挡「糊一个假 id 拉进群」）。 */
+    async function knownAgentIds() {
+      const set = new Set()
+      try {
+        const items = await listSessionsForHost()
+        for (const item of items) if (item && item.id) set.add(String(item.id))
+      } catch { /* 忽略 */ }
+      try {
+        const registry = agentsRegistry || (ctx && ctx.agents)
+        const live = registry && typeof registry.list === 'function' ? registry.list() : []
+        for (const agent of live || []) {
+          // 真 DSH 的句柄是 { session: { id } }；测试替身是 { id } —— 两种都认
+          const id = (agent && agent.session && agent.session.id) || (agent && agent.id)
+          if (id) set.add(String(id))
+        }
+      } catch { /* 忽略 */ }
+      return set
+    }
+
     /** 会话的标题（给「拉进群」当默认别名用）；拿不到就返回空串。 */
     async function titleOfAgent(sessionId) {
       const key = String(sessionId || '')
@@ -2360,6 +2379,12 @@ function setup(ctx, config) {
         const title = session && (session.title
           || (session.projections && session.projections.values && session.projections.values.title))
         if (title) return String(title)
+      } catch { /* 忽略 */ }
+      // 会话没在跑的时候拿不到 handle，退回去查一次会话列表（主 agent 的子 agent 常常是歇着的）
+      try {
+        const items = await listSessionsForHost()
+        const hit = items.find((item) => String(item.id || '') === key)
+        if (hit && hit.title) return String(hit.title)
       } catch { /* 忽略 */ }
       return ''
     }
@@ -2596,6 +2621,12 @@ function setup(ctx, config) {
             || ''
           if (!groupId) return { ok: false, error: 'no-group' }
           if (!chat.isAgentMember(groupId, me.id)) return { ok: false, error: 'not-member', group: groupId }
+          // 真机踩到的坑：随手糊一个 id（例如全零 UUID）也能被拉进群，群里就多一个永远不说话的影子成员。
+          // 只接受「确实是 DSH 会话」的 id；已经在群里的按幂等处理。
+          const known = await knownAgentIds()
+          if (!chat.isAgentMember(groupId, target) && !known.has(target)) {
+            return { ok: false, error: 'unknown-agent', agent: target, group: groupId }
+          }
           const title = await titleOfAgent(target) || target
           const alias = String((args && args.name) || '').trim()
           const result = chat.addAgent(groupId, { id: target, title, alias: alias || undefined })

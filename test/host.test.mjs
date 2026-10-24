@@ -754,6 +754,10 @@ assert.ok(ownMessages.some((message) => message.text === '工具发言'))
 
 // 8.6.1 agent 自助改名：只改自己的名字；撞名自动加尾巴；不在群里就报 not-member
 console.log('step: agent rename')
+// 「拉进群」现在会校验会话是否真的存在（挡糊出来的假 id），先把测试用的会话登记进假注册表
+for (const id of ['session-test', 'session-other', 'session-third', 'session-child', 'session-helper']) {
+  if (!liveAgents.has(id)) liveAgents.set(id, makeAgent(id))
+}
 const renameDef = registeredTools.get('room_chat_rename')
 const inviteDef = registeredTools.get('room_chat_invite')
 assert.equal(typeof renameDef.output.render, 'function')
@@ -792,6 +796,10 @@ const outsiderInvite = await inviteDef.execute({ agent: 'session-child', group: 
 assert.equal(outsiderInvite.error, 'not-member')
 // 缺 agent 参数 → bad-agent
 assert.equal((await inviteDef.execute({}, agentExec)).error, 'bad-agent')
+// 糊一个不存在的会话 id → unknown-agent（真机踩过：全零 UUID 也能进群，群里多出永远不说话的影子成员）
+const bogus = await inviteDef.execute({ agent: 'session-00000000-0000-0000-0000-000000000000', group: groupId }, agentExec)
+assert.equal(bogus.error, 'unknown-agent')
+assert.equal(bogus.ok, false)
 
 // 同一个名字 + 同一个来源 IP 重连 → 身份 id 不变（聊天记录里的「谁说的」不会断）
 // 注意：重连会换发新令牌、旧令牌作废，所以这条放在所有「用旧令牌」的断言之后。
