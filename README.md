@@ -9,8 +9,10 @@
 > 于是 DSH 的 Host/Origin 栅栏永远看到 `127.0.0.1`，不需要改 DSH 任何配置。
 
 代码仓库：[sktian114/dsh-room](https://github.com/sktian114/dsh-room)
-npm：[`@sktian114/dsh-room`](https://www.npmjs.com/package/@sktian114/dsh-room)
-发布状态：**0.3.x 预发布，已公开发布**（源码 + npm 同时发）。
+发布状态：**0.3.x 预发布，公开发布在 GitHub**（tag + Release，见
+[Releases](https://github.com/sktian114/dsh-room/releases)）。
+**不发布到 npm**：桌面版 profile 不允许 `dsh plugin add`，装法就是「拿仓库跑一次
+`install.mjs`」，包管理器在这条链路上没有收益，所以 `private: true` 保留（防误发）。
 先读 [SECURITY.md](./SECURITY.md) 再决定开不开房。
 
 [![test](https://github.com/sktian114/dsh-room/actions/workflows/test.yml/badge.svg)](https://github.com/sktian114/dsh-room/actions/workflows/test.yml)
@@ -290,29 +292,24 @@ node dsh-room/install.mjs --uninstall
 - 清掉旧版留下的 `node_modules\dsh-room`，避免挂载两份
 - 打印重启提示
 
-> **发布状态（0.3.16 起）：已公开发布。** 包在 npm 上是 `@sktian114/dsh-room`，
-> 源码在 [sktian114/dsh-room](https://github.com/sktian114/dsh-room)。0.3.x 属于预发布阶段，
+> **发布状态：公开发布在 GitHub，不发 npm。** 源码与 tag/Release 在
+> [sktian114/dsh-room](https://github.com/sktian114/dsh-room)。0.3.x 属于预发布阶段，
 > 接口和界面还会变；安全边界请务必读 [SECURITY.md](./SECURITY.md)。
+>
+> 为什么不上 npm：装法本质是「把仓库复制进 profile + 写 patch」，桌面版 profile 不允许
+> `dsh plugin add`，所以包管理器没有收益；`package.json` 保留 `private: true` 防误发。
 
-**从 npm 装（推荐，已可用）**
+**从 Release 装（推荐）**
 
-```bash
-npm i -g @sktian114/dsh-room     # 或者 npm i -D @sktian114/dsh-room 放在任意目录
+到 [Releases](https://github.com/sktian114/dsh-room/releases) 下载对应 tag 的源码 zip，解压后
+在解压目录里跑一次安装器：
+
+```powershell
+node .\install.mjs            # 或 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-装完仍然跑一次自带的安装器，把包复制进 profile 并写 `cordis.patch.yml`——
-桌面版 profile 不允许 `dsh plugin add`，只能这样挂：
-
-```bash
-node "$(npm root -g)/@sktian114/dsh-room/install.mjs"        # Windows 见下面的路径写法
-```
-
-Windows 全局包路径通常是
-`%APPDATA%\npm\node_modules\@sktian114\dsh-room\install.mjs`。
-
-然后**完全退出并重启 DSH**（托盘退出，不是关窗口）。
-如果只是想让新装/更新后的插件生效：宿主插件会在 patch 变化时热加载，
-通常**刷新一下 DSH 窗口（Ctrl+R）**就能看到「联机」按钮；重启最稳妥。
+也可以直接 `git clone https://github.com/sktian114/dsh-room.git` 后跑同一条命令；
+自用的开发仓库原地跑也行（见下面的方式 A）。
 
 然后**完全退出并重启 DSH**（托盘退出，不是关窗口）。
 如果只是想让新装/更新后的插件生效：宿主插件会在 patch 变化时热加载，

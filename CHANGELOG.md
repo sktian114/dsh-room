@@ -2,10 +2,10 @@
 
 > 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
-## 0.3.17 · 2026-10-25（首个 npm 发布版）
+## 0.3.17 · 2026-10-25（首个公开发布版）
 
-0.3.16 的 tag/Release 先发到了 GitHub，但 npm 首发被两件 CI 拦下的事卡住；这一版把它们修掉，
-npm 与 GitHub 首次同时可用（**npm 上的第一个版本是 0.3.17**）。
+0.3.16 的 tag/Release 先发到了 GitHub，但首发 CI 抓到两件事；这一版把它们修掉，
+作为**首个公开发布版**（tag + Release）发布。
 
 ### 修：Node 20 上插件加载即崩（CI 抓到的真 bug）
 
@@ -25,10 +25,10 @@ pwsh 步骤结束会拿它当退出码 → 这一步永远判失败（首发 tag
 末尾显式 `$global:LASTEXITCODE = 0; exit 0`。
 ## 0.3.16 · 2026-10-25（首个公开发布）
 
-> 从这个版本起，源码与 npm 包同时公开：GitHub `sktian114/dsh-room`、
-> npm `@sktian114/dsh-room`（`publishConfig.access: public`）。
+> 从这个版本起源码公开：GitHub `sktian114/dsh-room`（tag + Release 分发）。
+> **不发布到 npm**（`private: true`）：装法本质是把仓库复制进 profile 再写 patch，
+> 桌面版 profile 不允许 `dsh plugin add`，包管理器在这条链路上没有收益。
 > 0.3.x 属于预发布，接口与界面仍会变；升级请按 `CHANGELOG` 的条目看兼容性。
-> 发布流程见 `.github/workflows/publish.yml`（打 `v*` tag 自动发布，需 `NPM_TOKEN` secret）。
 
 发布前独立审计（`release-auditor`）的阻塞项与高危项。前三条都是**发布前必须挡住**的：
 它们是既有问题，不是 0.3.15 引入的，但都直接推翻 README 里对用户的承诺。

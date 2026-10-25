@@ -1,4 +1,4 @@
-# dsh-room v0.3.17 · 首个公开发布（npm 与 GitHub 同步）
+# dsh-room v0.3.17 · 首个公开发布
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）桌面版加一个「联机」按钮：
 房主开房，同一网络里的朋友用手机/另一台电脑输入 `IP:8787` 就能进房间，
@@ -10,16 +10,16 @@
 
 ## 安装
 
-```bash
-npm i -g @sktian114/dsh-room
-node "$(npm root -g)/@sktian114/dsh-room/install.mjs"
+从 [Releases](https://github.com/sktian114/dsh-room/releases) 下载对应 tag 的源码 zip（或 `git clone`），
+解压后在目录里跑一次安装器：
+
+```powershell
+node .\install.mjs          # 或 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Windows 上把最后一行换成
-`node "$env:APPDATA\npm\node_modules\@sktian114\dsh-room\install.mjs"`。
 装完**完全退出并重启 DSH**（托盘退出，不是关窗口），左侧栏出现「联机」即成功。
 
-也可以直接用仓库里的一键脚本：`powershell -ExecutionPolicy Bypass -File .\install.ps1`。
+> 本插件**不发布到 npm**：装法本质是复制进 profile + 写 patch，包管理器没有收益。
 
 ## 0.3.16 → 0.3.17 修了什么
 
