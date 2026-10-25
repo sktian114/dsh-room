@@ -1,7 +1,7 @@
 /**
  * dsh-room —— 房间联机（宿主半边）
  *
- * 0.3.15：本轮同样只有客户端（lib/client.js）改动，宿主逻辑没变；但 DSH 只在插件源码
+ * 0.3.16：本轮宿主（index.mjs / lib/*.mjs）有改动，重载会真的换模块
  * 「真的有变化」时才重新组合，否则会继续沿用内存里那份旧模块（连 ping 的 version
  * 都还是旧的）。所以这里也留一行变更，保证开关一次能真正换上新版本。
  *
@@ -30,7 +30,7 @@
 
 import { createServer, request as httpRequest } from 'node:http'
 import { networkInterfaces, hostname, homedir } from 'node:os'
-import { readFileSync, writeFileSync, statSync, readdirSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, writeFile, statSync, readdirSync, mkdirSync } from 'node:fs'
 import { join, resolve, sep, basename, dirname } from 'node:path'
 import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
 import { createGuestGuard, tokenFromCookie } from './lib/guard.mjs'
@@ -484,6 +484,10 @@ function setup(ctx, config) {
   // 消息与「谁是谁」（昵称 + 头像）落盘到 ~/.dsh/dsh-room-store.json：
   // 重启 DSH、重开房间之后，聊天记录与房客身份都还在。
   const STORE_FILE = join(dshHome(), 'dsh-room-store.json')
+
+// 存档硬上限：超过就丢最旧的聊天记录。历史上有过 400MB 的先例（每条消息抄一份头像），
+// 一次同步写盘会把整个 Host 卡死（2026-10-25 审计 B2）。
+const STORE_MAX_BYTES = 48 * 1024 * 1024
   let storeTimer = null
 
   /** 读本地存档：{ members: {id:{name,avatar}}, chat: snapshot }。坏了就当空的，绝不让房间起不来。 */
@@ -516,6 +520,7 @@ function setup(ctx, config) {
         profiles[id] = {
           id,
           name: String(member.name || '').slice(0, 40),
+          // 头像上限 200KB：成员表里只留一份，不跟着每条消息复制（审计 B2）
           avatar: String(member.avatar || ''),
           kind: 'guest',
           ip: String(member.ip || ''),
@@ -523,8 +528,19 @@ function setup(ctx, config) {
         }
       }
       const payload = { version: 1, savedAt: Date.now(), members: profiles, chat: chat.snapshot() }
+      let text = JSON.stringify(payload)
+      // 存档有过 400MB 级别的先例（每条消息抄一份头像）。这里再兜一层硬上限：
+      // 太大就丢掉最旧的聊天记录再序列化，绝不让一次写盘把主线程卡死。
+      if (text.length > STORE_MAX_BYTES) {
+        try {
+          chat.trimTo(500)
+          text = JSON.stringify(payload)
+        } catch { /* 忽略 */ }
+      }
+      if (text.length > STORE_MAX_BYTES) return       // 还是超标就这轮不写，别赌
       mkdirSync(dirname(STORE_FILE), { recursive: true })
-      writeFileSync(STORE_FILE, JSON.stringify(payload), 'utf8')
+      // 异步写：同步写几 MB 会把整个 Host 的事件循环按住
+      writeFile(STORE_FILE, text, 'utf8', () => { /* 落盘失败不影响房间本身 */ })
     } catch { /* 落盘失败不影响房间本身 */ }
   }
 
@@ -958,9 +974,30 @@ function setup(ctx, config) {
   function isDirectHost(req) {
     const forwarded = String(req.headers['x-forwarded-for'] || '').trim()
     if (forwarded) return false
+    // 光看来源地址不够：房主浏览器里打开的任意网页也能 fetch 本机端口（DNS rebinding /
+    // 跨源简单请求）。带 Origin 且不是本机来源的一律不算房主（2026-10-25 审计 H2）。
+    if (isForeignOrigin(req)) return false
     const remote = String((req.socket && req.socket.remoteAddress) || '').toLowerCase()
     if (isLoopback(remote)) return true
     return localAddresses().has(remote.replace(/^::ffff:/, ''))
+  }
+
+  /** 请求是不是「别的网站发起的」：Origin/cross-site 是就返回 true。 */
+  function isForeignOrigin(req) {
+    try {
+      const site = String(req.headers['sec-fetch-site'] || '').toLowerCase()
+      if (site === 'cross-site') return true
+      const origin = String(req.headers.origin || '').trim()
+      if (!origin) return false                       // 同源直连（fetch/curl/桌面壳）不带 Origin
+      const parsed = new URL(origin)
+      // file:// / app:// 这类不判：桌面壳可能这样发，判错会把房主自己挡在外面
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+      const host = String(req.headers.host || '').toLowerCase()
+      return String(parsed.host || '').toLowerCase() !== host
+    } catch {
+      // Origin 解析不了（畸形）：不判，交给来源地址那一道
+      return false
+    }
   }
 
   /**

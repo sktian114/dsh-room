@@ -1,5 +1,55 @@
-# 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
+# 变更记录
 
+
+> 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
+
+
+## 0.3.16 · 2026-10-25
+
+发布前独立审计（`release-auditor`）的阻塞项与高危项。前三条都是**发布前必须挡住**的：
+它们是既有问题，不是 0.3.15 引入的，但都直接推翻 README 里对用户的承诺。
+
+### 安全：分片 WebSocket 帧绕过帧级过滤（严重）
+
+`lib/frames.mjs` 只解析 `FIN=1` 的文本帧，而 `lib/guard.mjs` 的「访客不能 open 终端流」
+靠的是从 `open` 帧里记 `streamId → endpoint`。访客用原生 WS 客户端把 `open` 帧拆成
+`FIN=0` 的分片发过来，守卫就永远拿不到 endpoint，后续服务端帧因「endpoint 未知」被放行 ——
+等于拿到宿主 shell 的读写流（`terminal/attach` 在 DSH 里真实存在、`mode: "stream"`）。
+现在解析层直接拒绝分片帧（`fragmented-frame`）和孤立续帧（`orphan-continuation`），
+抛错走 0.3.11 已有的「断掉两端 socket」路径；正常客户端不会这么发。
+新增 `test/frames.test.mjs` 钉住（含「二进制帧仍透传」「超限帧仍拒绝」）。
+
+### 安全：每条消息复制一份 200KB 头像 → 单访客可打爆宿主内存与存档（严重）
+
+`chat.post()` 把 `from.avatar` 原样抄进每条消息（上限 200KB），单群 1000 条 = 200MB 常驻；
+而 `snapshot()` 还会把 `groups[].messages` 和 `recent` 各序列化一遍，写入是**同步**的 ——
+一次发消息就能把事件循环按住、并写出几百 MB 的存档。现在：
+
+- 消息里的头像只留 2KB 兜底（真头像走成员表，前端渲染本来就用 `avatarForName`）；
+- 存档超过 48MB 时先丢最旧的聊天记录再序列化，仍然超标就这一轮不写；
+- 落盘改 `fs.writeFile` 异步写；`restore()` 按 `maxMessages` 截断（旧存档不会再撑爆内存）；
+- 新增 `chat.trimTo(n)`，宿主在存档超标时调用。
+
+### 安全：会话类端点不再采信请求体里的 cwd（高）
+
+审计记录里的 S2 仍在：会话路径未知时用 `args.request.cwd` 兜底判权限，而只有
+`session/prompt` 拿到过宿主侧回填。房客在 `session/rename`/`cancel`/`fork`/`updateQueue`/
+`selectModel` 的信封里塞一个已开放目录，就能操作封锁工作区里的会话。
+现在**会话类端点认不出会话就拒绝**，只有非会话类端点才按 body 里的路径判（`guard.mjs`）。
+
+### 安全：房主端点的来源校验（中）
+
+`isDirectHost()` 只看来源地址。房主浏览器里打开的任意网页都能跨源 `fetch` 本机端口
+（DNS rebinding / 简单请求），读 `/room/api/host/state` 或直接 POST `/room/api/host/stop`。
+现在再判一道 `Origin` / `Sec-Fetch-Site`：跨源请求一律不算房主（`http(s)` 且 host 不一致，
+或 `sec-fetch-site: cross-site`）；不带 Origin 的同源直连照旧放行。
+
+### 文档
+
+- CHANGELOG 结构修复：0.3.11 重复了一遍、0.3.12 的服务端条目被塞进 0.3.11 段落、文件头被拼成半句；
+  0.3.11 关于「DSH 按解码后路径分派」的结论有误，已按 `app.asar` 核对结果改写为「纵深防御」。
+- README 补两条：胶囊「独占一行」的实现方式与硬约束；`Failed to load plugins` +
+  `web boot: 1 entry did not activate` 的真实成因（前端模块批次 rev 过期，整批 404）与处理办法。
 ## 0.3.15 · 2026-10-25
 
 修 0.3.14 的视觉回退（房间群内复核指出）：0.3.14 把胶囊整体改回「行内」，
@@ -49,6 +99,7 @@ DSH 会话视图的真实结构：`[data-conversation-scroll]` 是 `display:flex
 
 真机验收（`test/probe-orphan-chipline.js`，房间页 8787）：提升成立、模拟 React 重建后孤儿行
 在下一轮被清掉、行被外力删除后占位恢复可见且文字可读、滚动容器里的行被撤回、连跑多轮不堆积。
+
 ## 0.3.12 · 2026-10-25
 
 第二轮审计修复（客户端为主，`docs/audit-2026-10-25.md` 里的 C1/C2/C3/C5/C7/C9/C10/C13/C14/C17）。
@@ -69,33 +120,8 @@ DSH 会话视图的真实结构：`[data-conversation-scroll]` 是 `display:flex
 - **记住的拖动坐标按视口夹取**（C5）：换小屏打开不会整个飘到屏幕外。
 - **`--r-*` 变量补 fallback**（C17）：会话里的胶囊、拒绝提示不再失去底色/边框。
 - 测试：client 补 `onRoomPage` 5 条判定，chat 补分页/sync/游标清理 3 组（共 7 套全绿）。
-## 0.3.11 — 2026-10-25（查漏补缺）
 
-### 安全：房主专用接口的闸门原来漏了 5 条（严重）
-
-真机实测（8787 上带 `x-forwarded-for` 冒充房客）能拿到：
-
-- `GET /room/api/host/policy` → 200，整份工作区策略（含本机绝对路径）
-- `GET /room/api/host/state` → 200，房间状态 + `hostToken` + 成员表
-- `GET /room/api/host/fs?path=C:\Windows` → 200，**列任意目录**
-- `POST /room/api/host/stop` → 房间真的被停了
-
-原因是这几条 handler 各自「记得才写」`isDirectHost()`，而 `policy`(GET/POST) / `fs` /
-`start` / `stop` / `kick` 忘了写。修法：在路由匹配**之前**统一挡掉 `/api/host*`
-（`index.mjs`），handler 里原有的判断保留当第二道；测试用 `step: host-gate` 逐条钉住，
-以后新加 host 路由漏写也进不来。
-
-### 安全：房客请求过滤可被百分号编码绕过（严重）
-
-`lib/guard.mjs` 的禁区前缀（`pluginManager/`、`account/`、`terminal/`…）和
-「需要检查 body 的端点」（`session/prompt`、`session/create`、`workspaceFiles/*`…）
-都是拿**原始** pathname 比对的，而 DSH 路由按**解码后**的路径分派：
-房客只要把路径写成 `/api/%70luginManager/setBundleEnabled` 或
-`/api/session%2Fcreate`，整张黑名单就形同虚设。
-修法：新增 `decodedPathname()`（最多解 3 层），`judgeRequest` / `judgeBody` /
-`filterResponse` 都按「原始 + 解码」双份判定；解码失败按原样兜。
-
-### 其他修补（同一轮审计发现的，按「能确认就修」处理）
+### 服务端补修（同一轮审计，和客户端改动一起发）
 
 - **作者标记可伪造**（`lib/attribute.mjs`）：以前正文以 `〔@…〕` 开头就原样放过，房客写
   `〔@房主〕…` 就能让宿主界面/模型当成房主说的。现在先剥掉开头原有标记（叠几层都剥），
@@ -115,7 +141,25 @@ DSH 会话视图的真实结构：`[data-conversation-scroll]` 是 `display:flex
 - **WS 帧无上限**（`lib/frames.mjs`）：声明 2^63 长度就能让 buffer 只增不减吃内存；
   现在单帧上限 2MB、缓冲上限 4MB，超限抛错，代理侧直接断掉两端 socket。
 - **会话 id 路径穿越**（`sessionCwdOf`）：id 直接拼进 `sessions/<ws>/<id>/…`，带 `..` 能读
-  任意会话文件；现在先过 `^[A-Za-z0-9._-]{1,128}# 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
+  任意会话文件；现在先过 `^[A-Za-z0-9._-]{1,128}$` 且禁 `..`，缓存加 500 条上限。
+- **`stopRoom` 清理不全**：会话→工作区映射、cwd 缓存、房客会话登记、限流计数、握手标记
+  跨房间残留（重开房沿用旧权限/旧计数）；现在一起清。
+- **inject 没 await**：异步失败抓不到，而游标已推进 → 那个 agent 永久漏掉这条消息；现在
+  `await handle.inject(payload)` 成功之后才 `setCursor`。
+- **`to` 参数按空白切**：别名里可能带空格（来自会话标题），`to:"排版 小工#abc123"` 会被劈成
+  两段点不到人；现在先按逗号/分号切，再按「已知别名最长匹配」认，认不出才退回按空白切。
+- **`denyBody` 原型键**（`lib/deny.mjs`）：`denyBody("__proto__")` 会命中原型链，code/message
+  直接消失；改 `hasOwnProperty` 判定。
+
+### 本轮未修（已记录，见 `docs/audit-2026-10-25.md`）
+
+审计共 40 条（服务端 19 + 客户端 20 + 重复 1）。上面修了能立刻确认的 12 条；剩下的按风险
+分了两类：需要改接口形状/状态模型的（房间群可见性、访客身份 id 稳定性、房客会话权限时序、
+头像存储、WS 分片、访客页接管判定…）留到下一轮单独做，都写进了审计记录并标注了触发条件。
+
+
+- 测试：host 套件新增 `step: host-gate`（11 条路由 × 房客身份 → 403，且 stop 不生效）；
+  guard 套件新增编码绕过 5 条 + 编码 body 判定 1 条。
 
 ## 0.3.11 — 2026-10-25（查漏补缺）
 
@@ -137,28 +181,13 @@ DSH 会话视图的真实结构：`[data-conversation-scroll]` 是 `display:flex
 
 `lib/guard.mjs` 的禁区前缀（`pluginManager/`、`account/`、`terminal/`…）和
 「需要检查 body 的端点」（`session/prompt`、`session/create`、`workspaceFiles/*`…）
-都是拿**原始** pathname 比对的，而 DSH 路由按**解码后**的路径分派：
-房客只要把路径写成 `/api/%70luginManager/setBundleEnabled` 或
-`/api/session%2Fcreate`，整张黑名单就形同虚设。
+都是拿**原始** pathname 比对的。核对 DSH 源码（`app.asar` 的 client/rpc 段）后确认：
+DSH 本身也只认**原始** pathname、且拒绝含 `%` 的路径段，所以这一轮的解码属于
+**纵深防御**（DSH 哪天改用解码路径仍然挡得住），不是唯一防线。
 修法：新增 `decodedPathname()`（最多解 3 层），`judgeRequest` / `judgeBody` /
 `filterResponse` 都按「原始 + 解码」双份判定；解码失败按原样兜。
 
- 且禁 `..`，缓存加 500 条上限。
-- **`stopRoom` 清理不全**：会话→工作区映射、cwd 缓存、房客会话登记、限流计数、握手标记
-  跨房间残留（重开房沿用旧权限/旧计数）；现在一起清。
-- **inject 没 await**：异步失败抓不到，而游标已推进 → 那个 agent 永久漏掉这条消息；现在
-  `await handle.inject(payload)` 成功之后才 `setCursor`。
-- **`to` 参数按空白切**：别名里可能带空格（来自会话标题），`to:"排版 小工#abc123"` 会被劈成
-  两段点不到人；现在先按逗号/分号切，再按「已知别名最长匹配」认，认不出才退回按空白切。
-- **`denyBody` 原型键**（`lib/deny.mjs`）：`denyBody("__proto__")` 会命中原型链，code/message
-  直接消失；改 `hasOwnProperty` 判定。
-
-### 本轮未修（已记录，见 `docs/audit-2026-10-25.md`）
-
-审计共 40 条（服务端 19 + 客户端 20 + 重复 1）。上面修了能立刻确认的 12 条；剩下的按风险
-分了两类：需要改接口形状/状态模型的（房间群可见性、访客身份 id 稳定性、房客会话权限时序、
-头像存储、WS 分片、访客页接管判定…）留到下一轮单独做，都写进了审计记录并标注了触发条件。
-
+### 其他修补（0.3.11 同一轮，小项）
 
 - `pushText()`：别名超过 40 字截断时保留 `#尾巴`，否则两个长别名截完会同名（胶囊上分不清谁说的）。
 - `makeAlias()`：`tailOf()` 不再把英文单词从中间切开（`default-workspace` 以前得到 `ault-workspace`，现在是 `workspace`）。
@@ -168,8 +197,7 @@ DSH 会话视图的真实结构：`[data-conversation-scroll]` 是 `display:flex
 - `warmAliasCache()`：固定 4 次 × 5 秒改成分级退避（最多 10 次、上限 30 秒），
   房间晚开几分钟也能补上别名对照表；成功后额度重置。
 - `useResizable()`：渲染时按当前视口再夹一次尺寸（窗口变小后，上次拖大的面板会伸出屏幕外）。
-- 测试：host 套件新增 `step: host-gate`（11 条路由 × 房客身份 → 403，且 stop 不生效）；
-  guard 套件新增编码绕过 5 条 + 编码 body 判定 1 条。
+
 ## 0.3.10 — 2026-10-25
 
 ### 推送正文带作者标记；历史消息的胶囊不再「重启就没」
