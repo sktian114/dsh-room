@@ -499,6 +499,39 @@ const addAgent = await post('/room/api/host/chat/member', { group: groupId, agen
 assert.equal(addAgent.status, 200)
 assert.equal(addAgent.json.group.agents[0].title, '重构助手')
 
+// 0.3.10：拉人/踢人要写清「谁干的」（执行人）。不传 actor 时按房主算。
+const addWithActor = await post(
+  '/room/api/host/chat/member',
+  { group: groupId, agentId: 'session-other', agentTitle: '别的助手', actor: '房主 PC-1' },
+  base,
+)
+assert.equal(addWithActor.status, 200)
+const actorSync = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=0')
+const actorNotice = actorSync.body.messages.filter((m) => m.group === groupId && m.from.kind === 'system').map((m) => m.text)
+assert.ok(actorNotice.some((t) => t.includes('房主 PC-1 把') && t.includes('拉进了')), '系统提示要带执行人：' + actorNotice.join(' | '))
+assert.ok(actorNotice.some((t) => t.startsWith('房主 把')), '不传 actor 时按「房主」算：' + actorNotice.join(' | '))
+// 移出同样要写执行人
+const removed = await post(
+  '/room/api/host/chat/member',
+  { group: groupId, agentId: 'session-other', remove: true, actor: '房主 PC-1' },
+  base,
+)
+assert.equal(removed.status, 200)
+const afterRemove = await httpGetJson(roomBase + '/room/api/chat/sync?token=' + guestToken + '&since=0')
+assert.ok(
+  afterRemove.body.messages.some((m) => m.from.kind === 'system' && m.text.includes('房主 PC-1 把') && m.text.includes('移出了')),
+  '移出也要写执行人',
+)
+
+// 0.3.10：建群可以只拉指定的人（不传 = 空群），不需要把整个工作区的 agent 都塞进来
+const pickedGroup = await post('/room/api/host/chat/group', { name: '只拉一个', agents: [{ id: 'session-test' }] }, base)
+assert.equal(pickedGroup.status, 200)
+assert.equal(pickedGroup.json.group.agents.length, 1, '只应拉进勾中的那一个')
+assert.equal(pickedGroup.json.added.length, 1)
+const emptyGroup = await post('/room/api/host/chat/group', { name: '空空如也' }, base)
+assert.equal(emptyGroup.status, 200)
+assert.equal(emptyGroup.json.group.agents.length, 0, '不选人就是空群')
+
 const groupSend = await httpPostJson(roomBase + '/room/api/chat/send?token=' + guestToken, { group: groupId, text: '在吗' })
 assert.ok(groupSend.json.message.seq > firstSendSeq)
 const groupSendSeq = groupSend.json.message.seq
@@ -524,6 +557,10 @@ assert.equal(refactorAgent.calls[0].how, 'inject', '默认走 inject（不唤醒
 const pushedText = refactorAgent.calls[0].payload.content[0].text
 assert.ok(pushedText.includes('给 agent 的活'), '投递正文里要有消息内容')
 assert.ok(pushedText.includes('room_chat_read'), '投递正文要告诉它怎么读')
+// 0.3.10：推送正文最前面要有 `〔@发信人〕` 标记 —— 会话里靠它画「作者胶囊」，
+// 而且标记是**落在会话日志里的纯文本**，所以重启之后历史消息的胶囊还在。
+assert.ok(pushedText.startsWith('〔@'), '推送正文要以作者标记开头：' + pushedText.slice(0, 40))
+assert.ok(/^〔@[^〕\n]{1,40}〕/.test(pushedText), '标记格式要能被客户端正则认出来')
 // source.kind 必须是 producer-owned 形态：`{kind:'plugin'}` 是 DSH v4 已退役写法，
 // 落盘会被拒（真机上表现为「本轮运行失败：format v4 message requires a producer-owned source kind」）。
 const pushedSource = refactorAgent.calls[0].payload.source

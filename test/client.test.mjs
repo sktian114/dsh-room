@@ -838,5 +838,23 @@ globalThis.localStorage.removeItem('dsh-room.guest')
 globalThis.document.querySelectorAll = () => []
 assert.equal(typeof profileApi.installGuestChrome(), 'boolean')
 
+// ── 会话 id → 群里别名（历史消息的胶囊重启后还在，靠这张对照表）──
+profileApi.rememberGroupAliases([
+  { id: 'g1', agents: [{ id: 'bb816161-c7b0-4931-8cfe-8021ebcbfecc', alias: '杂项#bb8161', title: '总监' }] },
+  { id: 'g2', agents: [{ id: 'session-a811ab8b-d8fa-4e57-9b12-2847eda116c9', alias: '验收二号' }] },
+])
+assert.equal(
+  profileApi.aliasForSessionLabel('bb816161-c7b0-4931-8cfe-8021ebcbfecc'),
+  '杂项#bb8161',
+  '整条 id 直接查得到',
+)
+assert.equal(profileApi.aliasForSessionLabel('session-bb81'), '杂项#bb8161', '旧推送里的短 id 要能对上')
+assert.equal(profileApi.aliasForSessionLabel('session-a811ab8b'), '验收二号', '带 session- 前缀的也要认')
+assert.equal(profileApi.aliasForSessionLabel('访客6105'), '访客6105', '不是 session 号就原样返回')
+assert.equal(profileApi.aliasForSessionLabel('session-ffffffff'), '', '对不上就别乱画，返回空串')
+assert.equal(profileApi.aliasForSessionLabel(''), '')
+assert.doesNotThrow(() => profileApi.rememberGroupAliases(null))
+assert.doesNotThrow(() => profileApi.rememberGroupAliases([{ agents: null }, null]))
+
 console.log('dsh-room client smoke test: PASS')
 

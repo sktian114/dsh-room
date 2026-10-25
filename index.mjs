@@ -1085,10 +1085,20 @@ function setup(ctx, config) {
   }
 
   /** 投递给一个会话的正文：够它判断要不要读、去哪里读、怎么回。 */
+  /** 群里的显示名：优先用这个人在群里的别名，其次名字，最后 id。 */
+  function aliasOf(group, from) {
+    const id = String((from && from.id) || '')
+    const record = group && group.agents ? group.agents.get(id) : null
+    return String((record && record.alias) || (from && from.name) || id || '有人')
+  }
+
   function pushText(group, message, cursor) {
-    const who = message.from.name || message.from.id || '有人'
+    const who = aliasOf(group, message.from)
+    // 标记留给客户端画「作者胶囊」用：`〔@别名〕` 必须落在正文最前面。
+    // 标记长度上限 40 字（客户端的正则就是这么写的），别名超长就截断。
+    const label = who.length > 40 ? who.slice(0, 40) : who
     const tail = message.text.length > 600 ? message.text.slice(0, 600) + '…' : message.text
-    return '【房间消息·' + group.name + '】' + who + '：' + tail
+    return '〔@' + label + '〕【房间消息·' + group.name + '】' + tail
       + '\n（要看全文：room_chat_read group="' + group.id + '" since=' + cursor
       + '；要回话：room_chat_post group="' + group.id + '"）'
   }
@@ -1972,8 +1982,25 @@ function setup(ctx, config) {
           sendJson(res, 400, { ok: false, error: result.error, groups: chat.listGroups() }, cors)
           return
         }
-        say('info', '[' + NAME + '] 新建聊天群：' + result.group.name)
-        sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
+        // 建群时可以顺手拉人（可选）：不给就是**空群**，不是「把所有 agent 都塞进去」。
+        // 房主想先建一个只放两三个 agent 的小群，这条就走得通。
+        const wanted = Array.isArray(body.agents) ? body.agents : []
+        const created = result.group
+        const added = []
+        for (const item of wanted) {
+          const id = String((item && item.id) || item || '').trim()
+          if (!id) continue
+          const title = cleanText((item && (item.title || item.alias)), 60) || await titleOfAgent(id) || '未命名会话'
+          const one = chat.addAgent(created.id, { id, title })
+          if (one && one.agent) added.push(one.agent.alias)
+        }
+        say('info', '[' + NAME + '] 新建聊天群：' + created.name + (added.length ? '（先拉了 ' + added.length + ' 个成员）' : '（空群）'))
+        sendJson(res, 200, {
+          ok: true,
+          group: chat.group(created.id) ? chat.view(chat.group(created.id)) : created,
+          groups: chat.listGroups(),
+          added,
+        }, cors)
         return
       }
 
@@ -2004,7 +2031,7 @@ function setup(ctx, config) {
           return
         }
         const before = chat.group(groupId)
-        const knownAgent = before && before.agents ? before.agents.get(agentId) : null
+        const knownBefore = before && before.agents ? before.agents.get(agentId) : null
         const result = body.remove
           ? chat.removeAgent(groupId, agentId)
           : chat.addAgent(groupId, { id: agentId, title: cleanText(body.agentTitle || (body.agent && body.agent.title), 60) })
@@ -2018,18 +2045,26 @@ function setup(ctx, config) {
           sendJson(res, 200, { ok: true, already: true, group: result.group, groups: chat.listGroups() }, cors)
           return
         }
-        // 让群里的人和 agent 看见「谁被拉进来 / 移出去」，而不是成员悄悄变了
+        // 让群里的人和 agent 看见「谁被拉进来 / 移出去」，而不是成员悄悄变了。
+        // 而且要能看出**是谁干的**（房主？哪个 agent？）—— 只写「被拉进了群」等于没写执行人。
         const groupName = (chat.group(groupId) && chat.group(groupId).name) || groupId
-        const label = (knownAgent && knownAgent.title)
+        const after = chat.group(groupId)
+        const record = (after && after.agents && after.agents.get(agentId)) || knownBefore
+        const label = (record && record.alias)
           || cleanText(body.agentTitle || (body.agent && body.agent.title), 60)
           || agentId
+        const actor = cleanText(body.actor, 48)
+          || cleanText(body.actorAlias, 48)
+          || (body.actorId && chat.group(groupId) && chat.group(groupId).agents.get(String(body.actorId))
+            && chat.group(groupId).agents.get(String(body.actorId)).alias)
+          || '房主'
         if (!body.remove) {
           // 新成员的未读游标从「入群这一刻」开始算：不会把入群前的旧消息当未读推给它。
           const target = chat.group(groupId)
           const lastSeq = target && target.messages.length ? target.messages[target.messages.length - 1].seq : 0
           if (lastSeq > 0) chat.setCursor(agentId, groupId, lastSeq)
         }
-        systemSay('agent「' + label + '」' + (body.remove ? '被移出了「' : '被拉进了「') + groupName + '」', groupId)
+        systemSay(actor + ' 把 ' + label + (body.remove ? ' 移出了「' : ' 拉进了「') + groupName + '」', groupId)
         say('info', '[' + NAME + '] 群成员更新：' + groupId + ' ← ' + agentId)
         sendJson(res, 200, { ok: true, group: result.group, groups: chat.listGroups() }, cors)
         return
@@ -2063,7 +2098,7 @@ function setup(ctx, config) {
             id: randomUUID(),
             content: [{
               type: 'text',
-              text: '【房主召唤】群里有人找你。先 room_chat_read group="' + groupId + '" since=' + cursor
+              text: '〔@房主〕【房主召唤】群里有人找你。先 room_chat_read group="' + groupId + '" since=' + cursor
                 + '，读完之后用 room_chat_post 回话。',
             }],
             source: PUSH_SOURCE,
@@ -2342,6 +2377,34 @@ function setup(ctx, config) {
     }
   }
 
+  /**
+   * 会话的真实标题（会话没在跑也能拿到）。
+   * 三条路依次试：活句柄 → `session/list` → 磁盘投影缓存。拿不到就返回空串，
+   * 调用方自己决定怎么兜底（不要拿整条 UUID 当名字，会把成员表和 @点名弄脏）。
+   */
+  async function titleOfAgent(sessionId) {
+    const key = String(sessionId || '').trim()
+    if (!key) return ''
+    try {
+      const handle = await agentHandleOf(key)
+      const session = handle && handle.session
+      const title = handle && (handle.title
+        || (session && (session.title
+          || (session.projections && session.projections.values && session.projections.values.title))))
+      if (title) return String(title)
+    } catch { /* 忽略 */ }
+    // 会话没在跑的时候拿不到 handle，退回去查一次会话列表（主 agent 的子 agent 常常是歇着的）
+    try {
+      const items = await listSessionsForHost()
+      const hit = items.find((item) => String(item.id || '') === key)
+      if (hit && hit.title) return String(hit.title)
+    } catch { /* 忽略 */ }
+    // 列表也拿不到（没 cookie / 换连接 / 接口形状变了）时读磁盘上的投影缓存
+    const cached = titleFromProjectionCache(key)
+    if (cached) return cached
+    return ''
+  }
+
   function registerChatTools() {
     const agentInfo = (exec) => {
       const session = exec && exec.agent && exec.agent.session
@@ -2367,29 +2430,6 @@ function setup(ctx, config) {
         }
       } catch { /* 忽略 */ }
       return set
-    }
-
-    /** 会话的标题（给「拉进群」当默认别名用）；拿不到就返回空串。 */
-    async function titleOfAgent(sessionId) {
-      const key = String(sessionId || '')
-      if (!key) return ''
-      try {
-        const handle = await agentHandleOf(key)
-        const session = handle && handle.session
-        const title = session && (session.title
-          || (session.projections && session.projections.values && session.projections.values.title))
-        if (title) return String(title)
-      } catch { /* 忽略 */ }
-      // 会话没在跑的时候拿不到 handle，退回去查一次会话列表（主 agent 的子 agent 常常是歇着的）
-      try {
-        const items = await listSessionsForHost()
-        const hit = items.find((item) => String(item.id || '') === key)
-        if (hit && hit.title) return String(hit.title)
-      } catch { /* 忽略 */ }
-      // 列表也拿不到（没 cookie / 换连接 / 接口形状变了）时读磁盘上的投影缓存
-      const cached = titleFromProjectionCache(key)
-      if (cached) return cached
-      return ''
     }
 
     // output.schema 必须在 DSH 支持的 JSON Schema 子集内：type/oneOf/properties/
@@ -2636,7 +2676,12 @@ function setup(ctx, config) {
           const alias = String((args && args.name) || '').trim()
           const result = chat.addAgent(groupId, { id: target, title, alias: alias || undefined })
           if (result.error) return { ok: false, error: result.error, group: groupId }
-          if (!result.already) systemSay(result.agent.alias + ' 被拉进了群', groupId)
+          if (!result.already) {
+            // 显示执行人：群里的记录要能看出「是哪个 agent 把谁拉进来的」
+            const myAlias = (chat.group(groupId) && chat.group(groupId).agents.get(me.id)
+              && chat.group(groupId).agents.get(me.id).alias) || me.title || '有人'
+            systemSay(myAlias + ' 把 ' + result.agent.alias + ' 拉进了群', groupId)
+          }
           return { ok: true, group: groupId, agent: result.agent, already: Boolean(result.already) }
         },
       },
