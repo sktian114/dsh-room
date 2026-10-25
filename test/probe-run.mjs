@@ -68,13 +68,32 @@ await new Promise((resolve, reject) => {
 
 let seq = 0
 const pending = new Map()
+const logs = []
+const seen = new WeakSet()
+const noteLog = (text) => {
+  if (logs.length < 60) logs.push(String(text).slice(0, 400))
+}
 socket.addEventListener('message', (event) => {
   let payload
   try { payload = JSON.parse(event.data) } catch { return }
   if (payload.id && pending.has(payload.id)) {
     pending.get(payload.id)(payload)
     pending.delete(payload.id)
+    return
   }
+  // 收集控制台输出与未捕获异常（诊断「Failed to load plugins」这类启动问题要用）
+  try {
+    if (payload.method === 'Runtime.consoleAPICalled') {
+      const params = payload.params || {}
+      const text = (params.args || []).map((arg) => (arg.value !== undefined ? String(arg.value) : String((arg.preview && arg.preview.description) || arg.type))).join(' ')
+      const level = params.type || 'log'
+      if (/error|warn/i.test(level)) noteLog('[' + level + '] ' + text)
+    } else if (payload.method === 'Runtime.exceptionThrown') {
+      const details = (payload.params || {}).exceptionDetails || {}
+      const text = (details.exception && (details.exception.description || details.exception.value)) || details.text || ''
+      noteLog('[exception] ' + text)
+    }
+  } catch { /* 忽略 */ }
 })
 
 function send(method, params) {
@@ -108,6 +127,10 @@ const result = await send('Runtime.evaluate', {
 const value = result && result.result && result.result.result
 console.log('[probe] 结果：')
 console.log(JSON.stringify(value && value.value !== undefined ? value.value : result, null, 2))
+if (logs.length) {
+  console.log('[probe] 控制台错误（' + logs.length + ' 条）：')
+  for (const line of logs) console.log('  ' + line)
+}
 
 try { socket.close() } catch { /* 忽略 */ }
 try { child.kill() } catch { /* 忽略 */ }
