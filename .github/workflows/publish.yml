@@ -19,6 +19,9 @@ permissions:
 jobs:
   publish:
     runs-on: windows-latest
+    env:
+      # 没配 NPM_TOKEN 时整个发布步骤跳过（只跑测试+校验），不会把首发的 CI 弄红
+      HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +44,23 @@ jobs:
           if ($pkg -ne $tag) { throw "package.json 版本 $pkg 和 tag $tag 不一致" }
           Write-Host "版本一致：$pkg"
 
+      # 手动 `npm publish` 之后再推 tag 也不会红：已经发过的版本直接跳过。
+      - name: 这个版本是否已经发布
+        id: check
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $existing = npm view "@sktian114/dsh-room@$ver" version 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing) {
+            Write-Host "npm 上已有 $ver，跳过发布"
+            "published=yes" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Host "npm 上还没有 $ver，准备发布"
+            "published=no" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
       - name: 发布到 npm
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.check.outputs.published == 'no' && env.HAS_TOKEN == 'true'
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
