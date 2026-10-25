@@ -1,0 +1,48 @@
+name: publish
+
+# 打 tag（v*）时自动发布到 npm；也可以用 workflow_dispatch 手动跑一次。
+# 需要仓库 secrets 里配置 NPM_TOKEN（npm 账号的 Granular Access Token，勾选
+# 「Read and write」+ 只授权 @sktian114 这个 scope）。
+#
+# 注意：桌面版 profile 不允许 `dsh plugin add`，所以 npm 包只是「分发载体」，
+# 用户装完还要跑一次包里的 install.mjs 才能挂进 DSH（见 README）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write        # npm provenance
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 先跑一遍测试（不绿不发）
+        run: npm test
+
+      - name: 检查发布包内容（test/ 与 docs/ 不应进包）
+        run: npm pack --dry-run
+
+      - name: 版本号必须和 tag 一致
+        shell: pwsh
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($pkg -ne $tag) { throw "package.json 版本 $pkg 和 tag $tag 不一致" }
+          Write-Host "版本一致：$pkg"
+
+      - name: 发布到 npm
+        if: github.event_name == 'push'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

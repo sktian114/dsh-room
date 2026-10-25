@@ -1,10 +1,13 @@
 # 变更记录
 
-
 > 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.16 · 2026-10-25（首个公开发布）
 
-## 0.3.16 · 2026-10-25
+> 从这个版本起，源码与 npm 包同时公开：GitHub `sktian114/dsh-room`、
+> npm `@sktian114/dsh-room`（`publishConfig.access: public`）。
+> 0.3.x 属于预发布，接口与界面仍会变；升级请按 `CHANGELOG` 的条目看兼容性。
+> 发布流程见 `.github/workflows/publish.yml`（打 `v*` tag 自动发布，需 `NPM_TOKEN` secret）。
 
 发布前独立审计（`release-auditor`）的阻塞项与高危项。前三条都是**发布前必须挡住**的：
 它们是既有问题，不是 0.3.15 引入的，但都直接推翻 README 里对用户的承诺。
