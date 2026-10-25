@@ -570,6 +570,21 @@ assert.equal(profileApi.isGuestPage(), false, '没加入房间时不是房客页
 // 房客身份（模拟 saveGuest 写进去的记录）
 globalThis.localStorage.setItem('dsh-room.guest', JSON.stringify({ addr: 'http://172.16.1.130:8787', token: 'tok', name: '访客6105' }))
 assert.equal(profileApi.isGuestPage(), true)
+
+// 「有加入记录」不等于「当前页就是房间页」（2026-10-25 审计 C1）：
+// 插件用户从自己的 DSH 点「访客」加入别人房间后，自己 DSH 里也存着同一份记录，
+// 以前会被当成房客页接管 —— 侧栏被换、自己的 prompt 被打上房客标记。
+assert.equal(moduleExports.__test.onRoomPage(), false, '没有 window.location 时不能认定是房间页')
+globalThis.window.location = { origin: 'http://127.0.0.1:65332' }
+assert.equal(moduleExports.__test.onRoomPage(), false, '在自己 DSH 的页面上不是房客页')
+globalThis.window.location = { origin: 'http://172.16.1.130:8787' }
+assert.equal(moduleExports.__test.onRoomPage(), true, '在房间页上才是房客页')
+globalThis.window.location = { origin: 'http://172.16.1.130:8787/' }
+assert.equal(moduleExports.__test.onRoomPage(), true, '末尾斜杠不影响判断')
+globalThis.window.location = { origin: 'http://172.16.1.130:8888' }
+assert.equal(moduleExports.__test.onRoomPage(), false, '端口不同就不是同一个房间')
+// 之后这些用例都当作「在房间页上」，跟真实房客浏览器一致
+globalThis.window.location = { origin: 'http://172.16.1.130:8787' }
 globalThis.localStorage.removeItem(profileApi.STORAGE_PROFILE)
 assert.equal(profileApi.guestDisplayName(), '访客6105', '没改过本地昵称就用房间里的名字')
 assert.equal(moduleExports.__test.localIdentityName(), '访客6105', '指令标记也跟着本地昵称')

@@ -155,4 +155,60 @@ assert.equal(small.sync({ since: 0 }).seq, 80)
   assert.deepEqual(restoredAgents.map((item) => item.alias).sort(), [one.alias, two.alias, three.alias].sort())
 }
 
+/* ── 14. 分页不能再漏读（2026-10-25 审计）──
+ * 以前 messagesOf 是 `filter(seq>since).slice(-limit)`：未读 60 条 + limit 50 会一次跳到
+ * 最新一页，前 10 条既不再推送、也没法用 since 翻回来。
+ */
+{
+  const room = createChatStore({ maxMessages: 500 })
+  const group = room.ensureLobby('分页群')
+  for (let i = 0; i < 60; i += 1) {
+    room.post({ groupId: group.id, from: { kind: 'guest', id: 'g1', name: '阿伟' }, text: 'm' + (i + 1) })
+  }
+  const page1 = room.messagesOf(group.id, 0, 50)
+  assert.equal(page1.length, 50, '第一页给 50 条')
+  assert.equal(page1[0].text, 'm1', '第一页从最老的未读开始')
+  assert.equal(page1[page1.length - 1].text, 'm50')
+  const page2 = room.messagesOf(group.id, page1[page1.length - 1].seq, 50)
+  assert.equal(page2.length, 10, '第二页只剩剩下的 10 条')
+  assert.equal(page2[0].text, 'm51', '第二页接着第一页，不跳页')
+  assert.equal(page2[page2.length - 1].text, 'm60')
+  assert.equal(room.messagesOf(group.id, page2[page2.length - 1].seq, 50).length, 0, '读完就没有了')
+}
+
+/* ── 15. sync 不能因为群多而丢消息 ── */
+{
+  const room = createChatStore({ maxMessages: 20 })
+  const a = room.createGroup({ name: 'A 群' }).group
+  const b = room.createGroup({ name: 'B 群' }).group
+  for (let i = 0; i < 5; i += 1) {
+    room.post({ groupId: a.id, from: { kind: 'guest', id: 'g1', name: '阿伟' }, text: 'a' + (i + 1) })
+  }
+  for (let i = 0; i < 50; i += 1) {
+    room.post({ groupId: b.id, from: { kind: 'guest', id: 'g1', name: '阿伟' }, text: 'b' + (i + 1) })
+  }
+  const synced = room.sync({ since: 0 }).messages
+  const texts = synced.map((message) => message.text)
+  assert.equal(texts.filter((text) => text.startsWith('a')).length, 5, 'A 群的消息不能被挤出窗口')
+  assert.equal(texts.filter((text) => text.startsWith('b')).length, 50)
+  assert.deepEqual(synced.map((m) => m.seq), synced.map((m) => m.seq).slice().sort((x, y) => x - y), '合并后按 seq 有序')
+}
+
+/* ── 16. 删群/删成员要一起清游标 ── */
+{
+  const room = createChatStore()
+  const group = room.createGroup({ name: '临时群' }).group
+  room.addAgent(group.id, { id: 'session-x', title: '临时助手' })
+  room.setCursor('session-x', group.id, 7)
+  assert.equal(room.cursorOf('session-x', group.id), 7)
+  room.removeAgent(group.id, 'session-x')
+  assert.equal(room.cursorOf('session-x', group.id), 0, '删成员清掉他的游标')
+  room.addAgent(group.id, { id: 'session-y', title: '另一个助手' })
+  room.setCursor('session-y', group.id, 9)
+  room.removeGroup(group.id)
+  assert.equal(room.cursorOf('session-y', group.id), 0, '删群清掉所有成员游标')
+  const saved = JSON.stringify(room.snapshot())
+  assert.equal(saved.indexOf(group.id) < 0, true, '存档里不再有删掉的群和它的游标')
+}
+
 console.log('dsh-room chat test: PASS')
