@@ -2,6 +2,27 @@
 
 > 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.17 · 2026-10-25（首个 npm 发布版）
+
+0.3.16 的 tag/Release 先发到了 GitHub，但 npm 首发被两件 CI 拦下的事卡住；这一版把它们修掉，
+npm 与 GitHub 首次同时可用（**npm 上的第一个版本是 0.3.17**）。
+
+### 修：Node 20 上插件加载即崩（CI 抓到的真 bug）
+
+`lib/sessioninfo.mjs` 用命名导入拿 `zstdDecompressSync`，而 zstd 解压是 **Node 22.15** 才有的；
+`engines` 写的是 `>=20`，所以 Node 20 上 `import` 阶段就抛
+`SyntaxError: The requested module "node:zlib" does not provide an export named "zstdDecompressSync"`
+——插件不是功能坏，是**整个加载失败**。GitHub Actions 的 Node 20 矩阵就是这么红的。
+
+改成命名空间导入 + 运行时探测：老 Node 上退化为「读不到会话文件头」，
+守卫继续用 `session/list` 与界面行为兜底；`test/sessioninfo.test.mjs` 也改成不支持时 SKIP
+（不再是导入期崩溃）。`engines` 保持 `>=20`，行为是降级而不是不可用。
+
+### 修：发布工作流的退出码 bug
+
+`publish.yml` 里「这个版本是否已经发布」用 `npm view` 探测，查不到包时 `$LASTEXITCODE = 1`，
+pwsh 步骤结束会拿它当退出码 → 这一步永远判失败（首发 tag 的 publish 运行就是这么红的）。
+末尾显式 `$global:LASTEXITCODE = 0; exit 0`。
 ## 0.3.16 · 2026-10-25（首个公开发布）
 
 > 从这个版本起，源码与 npm 包同时公开：GitHub `sktian114/dsh-room`、

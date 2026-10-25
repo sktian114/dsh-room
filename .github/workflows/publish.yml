@@ -58,6 +58,10 @@ jobs:
             Write-Host "npm 上还没有 $ver，准备发布"
             "published=no" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
+          # pwsh 步骤结束时会拿 $LASTEXITCODE 当退出码：`npm view` 查不到包返回 1，
+          # 不清零就会把这一步判成失败（2026-10-25 首发就是这么红的）。
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: 发布到 npm
         if: github.event_name == 'push' && steps.check.outputs.published == 'no' && env.HAS_TOKEN == 'true'

@@ -9,8 +9,11 @@ import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { zstdCompressSync } from 'node:zlib'
+import * as nodeZlib from 'node:zlib'
 import { promptSessionId, cwdFromSessionFile, dshHome, titleFromProjectionCache } from '../lib/sessioninfo.mjs'
+
+// zstd 压缩是 Node 22.15+ 才有的；老 Node 上这条用例跳过，别让 CI 的 Node 20 矩阵红。
+const zstdCompressSync = typeof nodeZlib.zstdCompressSync === 'function' ? nodeZlib.zstdCompressSync : null
 
 /* ── 1. 从信封里取会话 id ── */
 const envelope = (request, args) => JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'session/prompt', payload: { args: args === undefined ? { request } : args } })
@@ -42,12 +45,17 @@ const header = JSON.stringify({
 const tail = JSON.stringify({ type: 'turn/start', seq: 0, data: { turn: 1 } }) + '\n'
 // 两帧：头事件一帧、后续事件一帧（真机就是多帧，只解第一帧会漏内容/误判）
 const file = join(dir, 'session.v4.jsonl.zstd')
-writeFileSync(file, Buffer.concat([
-  zstdCompressSync(Buffer.from(header, 'utf8')),
-  zstdCompressSync(Buffer.from(tail, 'utf8')),
-]))
+if (zstdCompressSync) {
+  writeFileSync(file, Buffer.concat([
+    zstdCompressSync(Buffer.from(header, 'utf8')),
+    zstdCompressSync(Buffer.from(tail, 'utf8')),
+  ]))
 
-assert.equal(cwdFromSessionFile(sessionId, root), 'E:\\E Download\\AIWorking\\dsh space', 'JSON 转义要还原成正常路径')
+  assert.equal(cwdFromSessionFile(sessionId, root), 'E:\\E Download\\AIWorking\\dsh space', 'JSON 转义要还原成正常路径')
+} else {
+  console.log('sessioninfo: SKIP 解码用例（当前 Node 不支持 zstd，需要 ≥ 22.15）')
+  writeFileSync(file, Buffer.from('plain-text-placeholder', 'utf8'))
+}
 assert.equal(cwdFromSessionFile('session-not-there', root), '', '查不到返回空串')
 assert.equal(cwdFromSessionFile('', root), '')
 

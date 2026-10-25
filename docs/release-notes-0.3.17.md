@@ -1,4 +1,4 @@
-# dsh-room v0.3.16 · 首个公开发布
+# dsh-room v0.3.17 · 首个公开发布（npm 与 GitHub 同步）
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）桌面版加一个「联机」按钮：
 房主开房，同一网络里的朋友用手机/另一台电脑输入 `IP:8787` 就能进房间，
@@ -20,6 +20,12 @@ Windows 上把最后一行换成
 装完**完全退出并重启 DSH**（托盘退出，不是关窗口），左侧栏出现「联机」即成功。
 
 也可以直接用仓库里的一键脚本：`powershell -ExecutionPolicy Bypass -File .\install.ps1`。
+
+## 0.3.16 → 0.3.17 修了什么
+
+- **Node 20 上插件加载即崩**：`zstdDecompressSync` 是 Node 22.15 才有的 API，命名导入让
+  老 Node 在 import 阶段就抛 SyntaxError（整个插件加载失败）。改成运行时探测 + 降级。
+- **发布工作流退出码 bug**：`npm view` 查不到包返回 1，pwsh 步骤把整步判失败。已显式清零。
 
 ## 这个版本里有什么
 
