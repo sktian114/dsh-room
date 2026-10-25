@@ -280,6 +280,36 @@ for (const path of hostOnlyPaths) {
 assert.equal(guard.judgeRequest('/api/session/prompt', 'POST', new URL('http://room.invalid/api/session/prompt')), 'inspect-body')
 assert.equal(guard.judgeRequest('/api/session/list', 'POST', new URL('http://room.invalid/api/session/list')), null)
 
+/* ── 9.5 编码绕过：把路径编码一下也不能溜进禁区 ──
+ * 上游 DSH 路由按解码后的路径分派，所以黑名单必须按解码后的再判一遍。
+ * 2026-10-25 补：以前 `/api/%70luginManager/…`、`/api/session%2Fcreate` 都能绕过。
+ */
+const encodedCases = [
+  '/api/%70luginManager/setBundleEnabled',
+  '/api/pluginManager%2FsetBundleEnabled',
+  '/api/%61ccount/logout',
+  '/api/%74erminal/exec',
+  '/api/settings%2Fupdate',
+]
+for (const path of encodedCases) {
+  assert.equal(guard.judgeRequest(path, 'POST', new URL('http://room.invalid' + path)), 'host-only', path + ' 编码后也必须挡')
+}
+// 需要检查 body 的端点：编码后也要走 inspect-body，不能当普通请求直接放行
+assert.equal(guard.judgeRequest('/api/session%2Fprompt', 'POST', new URL('http://room.invalid/api/session%2Fprompt')), 'inspect-body')
+assert.equal(guard.judgeRequest('/api/session%2Fcreate', 'POST', new URL('http://room.invalid/api/session%2Fcreate')), 'inspect-body')
+// 编码后的 body 判定同样生效（否则房客能拿编码路径去读封锁目录）
+const encodedReadBlocked = JSON.stringify({
+  type: 'client-request',
+  rpcId: 'r1',
+  method: 'workspaceFiles/read',
+  payload: { args: { path: blockedRoot + '\\a.txt' } },
+})
+assert.deepEqual(
+  guard.judgeBody('/api/workspaceFiles%2Fread', encodedReadBlocked),
+  { deny: 'workspace-blocked' },
+  '编码路径的读文件请求也要按路径判',
+)
+
 /* ── 10. 读文件端点按路径现判：封锁目录不给读，只读目录可以读 ── */
 const readBlocked = JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'workspaceFiles/read', payload: { args: { path: blockedRoot + '\\a.txt' } } })
 assert.deepEqual(guard.judgeBody('/api/workspaceFiles/read', readBlocked), { deny: 'workspace-blocked' })

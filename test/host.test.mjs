@@ -768,7 +768,18 @@ assert.ok(guestRow, 'roster should include the guest')
 assert.equal(guestRow.id, join.json.self.id)
 assert.equal(guestRow.name, '阿伟')
 assert.ok(roster.spokeRecently.some((item) => item.id === join.json.self.id), 'roster should know who spoke')
-assert.ok(roster.groups.some((group) => group.agents.some((agent) => agent.id === 'session-test')))
+assert.ok(roster.groups.some((group) => Array.isArray(group.agents) && group.agents.some((agent) => agent.id === 'session-test')))
+// 没入群的群不该吐成员表 / 最后一条消息（2026-10-25 审计：以前任何 agent 调一次 list
+// 就能看到所有群的内容与成员，违背「agent 只看被拉进的群」）
+const notJoinedGroup = roster.groups.find((group) => !group.joined)
+if (notJoinedGroup) {
+  assert.equal(notJoinedGroup.agents, undefined, '未入群的成员表不能给')
+  assert.equal(notJoinedGroup.lastText, undefined, '未入群的最后一条消息不能给')
+}
+const listedOutsider = await listDef.execute({}, outsiderExec)
+assert.equal(listedOutsider.ok, true)
+const leaking = listedOutsider.groups.filter((group) => group.joined === false && group.lastText !== undefined)
+assert.equal(leaking.length, 0, '未入群的群不能返回 lastText')
 
 // 没被拉进来的 agent 读不到、也发不了
 const deniedRead = await readDef.execute({ group: groupId }, outsiderExec)
@@ -875,6 +886,36 @@ assert.equal(afterExpiry.body.members.some((m) => m.name === '幽灵访客'), fa
 const deadToken = await fetch(roomBase + '/room/api/heartbeat?token=' + encodeURIComponent(ghost.json.token), { method: 'POST' })
 assert.equal(deadToken.status, 401, '过期的令牌也要失效')
 delete process.env.DSH_ROOM_MEMBER_TTL
+
+// 8.7 房主专用接口的统一闸门（2026-10-25 补的洞）
+// 以前每个 handler 自己记得写 isDirectHost()，结果 policy / fs / start / stop / kick
+// 五条漏了 —— 房客带着 x-forwarded-for 走代理就能读到工作区策略、列任意目录、把房间停掉。
+// 现在路由匹配之前统一挡；这里逐条钉住，防止以后新加的 host 路由又漏。
+console.log('step: host-gate')
+const guestHostRoutes = [
+  ['GET', '/room/api/host/policy'],
+  ['POST', '/room/api/host/policy'],
+  ['GET', '/room/api/host/state'],
+  ['GET', '/room/api/host/agents'],
+  ['GET', '/room/api/host/fs?path=' + encodeURIComponent(process.cwd())],
+  ['POST', '/room/api/host/start'],
+  ['POST', '/room/api/host/stop'],
+  ['POST', '/room/api/host/kick'],
+  ['POST', '/room/api/host/chat/group'],
+  ['POST', '/room/api/host/chat/member'],
+  ['POST', '/room/api/host/chat/wake'],
+]
+for (const [method, route] of guestHostRoutes) {
+  const response = await httpPostJson(roomBase + route, {}, GUEST_HEADERS)
+  assert.equal(response.status, 403, '房客不该能打 ' + method + ' ' + route + '（拿到 ' + response.status + '）')
+  assert.equal(response.json && response.json.error, 'host-only', route + ' 的错误码要是 host-only')
+}
+// 重点：stop 没被执行（否则后面的断言和房间状态都会变）
+const stillRunning = await httpGetJson(base + '/room/api/host/state')
+assert.equal(stillRunning.body.running, true, '房客的 stop 请求不能真的把房间停掉')
+// 房主本机直连照旧能用（不能把闸门做成「谁都进不来」）
+const hostPolicy = await httpGetJson(base + '/room/api/host/policy')
+assert.equal(hostPolicy.status, 200, '房主直连要能读策略')
 
 // 9. 停止（必须是本机直连；房客走代理会被 host-only 拦掉）
 const stopped = await post('/room/api/host/stop', {}, base)

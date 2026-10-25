@@ -1,5 +1,106 @@
 # 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
 
+## 0.3.11 — 2026-10-25（查漏补缺）
+
+### 安全：房主专用接口的闸门原来漏了 5 条（严重）
+
+真机实测（8787 上带 `x-forwarded-for` 冒充房客）能拿到：
+
+- `GET /room/api/host/policy` → 200，整份工作区策略（含本机绝对路径）
+- `GET /room/api/host/state` → 200，房间状态 + `hostToken` + 成员表
+- `GET /room/api/host/fs?path=C:\Windows` → 200，**列任意目录**
+- `POST /room/api/host/stop` → 房间真的被停了
+
+原因是这几条 handler 各自「记得才写」`isDirectHost()`，而 `policy`(GET/POST) / `fs` /
+`start` / `stop` / `kick` 忘了写。修法：在路由匹配**之前**统一挡掉 `/api/host*`
+（`index.mjs`），handler 里原有的判断保留当第二道；测试用 `step: host-gate` 逐条钉住，
+以后新加 host 路由漏写也进不来。
+
+### 安全：房客请求过滤可被百分号编码绕过（严重）
+
+`lib/guard.mjs` 的禁区前缀（`pluginManager/`、`account/`、`terminal/`…）和
+「需要检查 body 的端点」（`session/prompt`、`session/create`、`workspaceFiles/*`…）
+都是拿**原始** pathname 比对的，而 DSH 路由按**解码后**的路径分派：
+房客只要把路径写成 `/api/%70luginManager/setBundleEnabled` 或
+`/api/session%2Fcreate`，整张黑名单就形同虚设。
+修法：新增 `decodedPathname()`（最多解 3 层），`judgeRequest` / `judgeBody` /
+`filterResponse` 都按「原始 + 解码」双份判定；解码失败按原样兜。
+
+### 其他修补（同一轮审计发现的，按「能确认就修」处理）
+
+- **作者标记可伪造**（`lib/attribute.mjs`）：以前正文以 `〔@…〕` 开头就原样放过，房客写
+  `〔@房主〕…` 就能让宿主界面/模型当成房主说的。现在先剥掉开头原有标记（叠几层都剥），
+  再强制换成真实发话人；正文中间出现的 `〔@…〕` 不受影响。
+- **代理层按解码路径分派**（`index.mjs` `handleProxy`）：accept-encoding、inspect-body、
+  `session/list` 过滤、`session/create` 回执、prompt 打标记以前都拿原始 pathname 比对，
+  `/api/%73ession/prompt` 能跳过整套判定；现在统一用解码路径（`routePath`）。
+- **agent 越权看群**（`room_chat_list` / `room_chat_members`）：没被拉进的群以前也会返回
+  `lastText` / 成员表。现在未入群只返回 `{id,name,joined:false}`。
+- **漏读**（`chat.mjs messagesOf`）：`filter(seq>since).slice(-size)` 会一次跳到最新一页，
+  未读 60 条 + limit 50 时前 10 条永远读不到。改成 `slice(0, size)`（从 since 往后取）、
+  游标只推进到本页最后一条。
+- **跨群丢消息**（`chat.mjs sync`）：以前从全局 `recent` 取，群多了会把某个群挤出窗口。
+  改为按群取 `seq > since` 再按 seq 合并（上限 2×maxMessages）。
+- **删群/删成员不清理游标**（`chat.mjs`）：`<成员>::<群>` 游标永久残留、还会写进存档，
+  同 id 重建会继承旧游标导致漏推；顺带删掉 `removeGroup` 里那行无意义的 `group(id)`。
+- **WS 帧无上限**（`lib/frames.mjs`）：声明 2^63 长度就能让 buffer 只增不减吃内存；
+  现在单帧上限 2MB、缓冲上限 4MB，超限抛错，代理侧直接断掉两端 socket。
+- **会话 id 路径穿越**（`sessionCwdOf`）：id 直接拼进 `sessions/<ws>/<id>/…`，带 `..` 能读
+  任意会话文件；现在先过 `^[A-Za-z0-9._-]{1,128}# 1.0 之前的开发期，按 SemVer 预发布 / 小版本推进。
+
+## 0.3.11 — 2026-10-25（查漏补缺）
+
+### 安全：房主专用接口的闸门原来漏了 5 条（严重）
+
+真机实测（8787 上带 `x-forwarded-for` 冒充房客）能拿到：
+
+- `GET /room/api/host/policy` → 200，整份工作区策略（含本机绝对路径）
+- `GET /room/api/host/state` → 200，房间状态 + `hostToken` + 成员表
+- `GET /room/api/host/fs?path=C:\Windows` → 200，**列任意目录**
+- `POST /room/api/host/stop` → 房间真的被停了
+
+原因是这几条 handler 各自「记得才写」`isDirectHost()`，而 `policy`(GET/POST) / `fs` /
+`start` / `stop` / `kick` 忘了写。修法：在路由匹配**之前**统一挡掉 `/api/host*`
+（`index.mjs`），handler 里原有的判断保留当第二道；测试用 `step: host-gate` 逐条钉住，
+以后新加 host 路由漏写也进不来。
+
+### 安全：房客请求过滤可被百分号编码绕过（严重）
+
+`lib/guard.mjs` 的禁区前缀（`pluginManager/`、`account/`、`terminal/`…）和
+「需要检查 body 的端点」（`session/prompt`、`session/create`、`workspaceFiles/*`…）
+都是拿**原始** pathname 比对的，而 DSH 路由按**解码后**的路径分派：
+房客只要把路径写成 `/api/%70luginManager/setBundleEnabled` 或
+`/api/session%2Fcreate`，整张黑名单就形同虚设。
+修法：新增 `decodedPathname()`（最多解 3 层），`judgeRequest` / `judgeBody` /
+`filterResponse` 都按「原始 + 解码」双份判定；解码失败按原样兜。
+
+ 且禁 `..`，缓存加 500 条上限。
+- **`stopRoom` 清理不全**：会话→工作区映射、cwd 缓存、房客会话登记、限流计数、握手标记
+  跨房间残留（重开房沿用旧权限/旧计数）；现在一起清。
+- **inject 没 await**：异步失败抓不到，而游标已推进 → 那个 agent 永久漏掉这条消息；现在
+  `await handle.inject(payload)` 成功之后才 `setCursor`。
+- **`to` 参数按空白切**：别名里可能带空格（来自会话标题），`to:"排版 小工#abc123"` 会被劈成
+  两段点不到人；现在先按逗号/分号切，再按「已知别名最长匹配」认，认不出才退回按空白切。
+- **`denyBody` 原型键**（`lib/deny.mjs`）：`denyBody("__proto__")` 会命中原型链，code/message
+  直接消失；改 `hasOwnProperty` 判定。
+
+### 本轮未修（已记录，见 `docs/audit-2026-10-25.md`）
+
+审计共 40 条（服务端 19 + 客户端 20 + 重复 1）。上面修了能立刻确认的 12 条；剩下的按风险
+分了两类：需要改接口形状/状态模型的（房间群可见性、访客身份 id 稳定性、房客会话权限时序、
+头像存储、WS 分片、访客页接管判定…）留到下一轮单独做，都写进了审计记录并标注了触发条件。
+
+
+- `pushText()`：别名超过 40 字截断时保留 `#尾巴`，否则两个长别名截完会同名（胶囊上分不清谁说的）。
+- `makeAlias()`：`tailOf()` 不再把英文单词从中间切开（`default-workspace` 以前得到 `ault-workspace`，现在是 `workspace`）。
+- 客户端 `AUTHOR_CHIP_SKIP`：补上 `.dsh-room-chatpanel` / `.dsh-room-chatlog` / `.dsh-room-msgmain` /
+  `.dsh-room-authorline`（老选择器 `.dsh-room-chat` 这个类名早就不存在了，等于少挡了一层）。
+- 客户端胶囊探针改 `textContent`（原来 `innerText` 每 1.5 秒触发布局，长会话白烧 CPU）。
+- `warmAliasCache()`：固定 4 次 × 5 秒改成分级退避（最多 10 次、上限 30 秒），
+  房间晚开几分钟也能补上别名对照表；成功后额度重置。
+- `useResizable()`：渲染时按当前视口再夹一次尺寸（窗口变小后，上次拖大的面板会伸出屏幕外）。
+- 测试：host 套件新增 `step: host-gate`（11 条路由 × 房客身份 → 403，且 stop 不生效）；
+  guard 套件新增编码绕过 5 条 + 编码 body 判定 1 条。
 ## 0.3.10 — 2026-10-25
 
 ### 推送正文带作者标记；历史消息的胶囊不再「重启就没」

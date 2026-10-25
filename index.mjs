@@ -556,9 +556,12 @@ function setup(ctx, config) {
   /* 会话 → 工作区路径 的兜底来源：先问活着的 agent，再翻磁盘上的会话头。
    * 只在守卫还没学到这条会话时才查，结果缓存 60 秒。实现见 lib/sessioninfo.mjs（有单测）。 */
   const sessionCwdCache = new Map()
+  const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/
   async function sessionCwdOf(sessionId) {
     const key = String(sessionId || '')
-    if (!key) return ''
+    // id 会拼进文件路径（`sessions/<workspace>/<id>/session.v4.jsonl.zstd`），
+    // 必须先挡住 `..` 之类的穿越写法，否则房客能读任意会话文件里的 cwd（审计发现）。
+    if (!key || !SESSION_ID_RE.test(key) || key.includes('..')) return ''
     const cached = sessionCwdCache.get(key)
     if (cached && Date.now() - cached.at < 60_000) return cached.cwd
     let cwd = ''
@@ -568,6 +571,8 @@ function setup(ctx, config) {
       if (header && header.cwd) cwd = String(header.cwd)
     } catch { /* 忽略 */ }
     if (!cwd) cwd = cwdFromSessionFile(key)
+    // 缓存上限：key 来自房客请求，不加限就是一个可被刷爆的 Map
+    if (sessionCwdCache.size > 500) sessionCwdCache.clear()
     sessionCwdCache.set(key, { cwd, at: Date.now() })
     return cwd
   }
@@ -989,12 +994,32 @@ function setup(ctx, config) {
    * 工具的 parameters 不使用 array 类型 —— DSH 只支持 JSON Schema 的一个子集，
    * 参数写错会在**加载期**抛错（历史上就是这种错让整个桌面端起不来）。
    */
-  function splitTargets(value) {
+  /** 某个群现有的别名列表（`to` 参数按别名整段匹配用）。 */
+  function aliasesInGroup(groupId) {
+    const target = chat.group(groupId)
+    if (!target) return []
+    return Array.from(target.agents.values()).map((agent) => String(agent.alias || '')).filter(Boolean)
+  }
+
+  function splitTargets(value, knownAliases) {
     if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean)
-    return String(value || '')
-      .split(/[,，;；\s]+/)
-      .map((item) => item.trim())
-      .filter(Boolean)
+    const raw = String(value || '').trim()
+    if (!raw) return []
+    // 别名可能带空格（来自会话标题），先按逗号/分号切，再按「已知别名最长匹配」认；
+    // 认不出来的段落才退回按空白切 —— 否则 `to:"排版 小工#abc123"` 会被劈成两半，
+    // agentByAlias 匹配失败，只能写正文 @ 才能点名（审计发现的缺陷）。
+    const pieces = raw.split(/[,，;；]+/).map((item) => item.trim()).filter(Boolean)
+    const aliases = Array.isArray(knownAliases) ? knownAliases.filter(Boolean) : []
+    const out = []
+    for (const piece of pieces) {
+      if (aliases.includes(piece)) { out.push(piece); continue }
+      const hit = aliases
+        .filter((alias) => piece.includes(alias))
+        .sort((a, b) => b.length - a.length)[0]
+      if (hit) { out.push(hit); continue }
+      for (const part of piece.split(/\s+/)) if (part) out.push(part)
+    }
+    return out
   }
 
   /** 往群里插一条系统提示（进房 / 离房 / 被拉进群）。系统消息不算「有人说话」。 */
@@ -1095,8 +1120,14 @@ function setup(ctx, config) {
   function pushText(group, message, cursor) {
     const who = aliasOf(group, message.from)
     // 标记留给客户端画「作者胶囊」用：`〔@别名〕` 必须落在正文最前面。
-    // 标记长度上限 40 字（客户端的正则就是这么写的），别名超长就截断。
-    const label = who.length > 40 ? who.slice(0, 40) : who
+    // 客户端正则是 1~40 字，超长就得截；但**要把 #尾巴 留住**，否则两个长别名
+    // 截断之后可能同名，胶囊上就分不清是谁说的了。
+    let label = who
+    if (label.length > 40) {
+      const hashAt = label.lastIndexOf('#')
+      const suffix = hashAt > 0 ? label.slice(hashAt) : label.slice(-6)
+      label = label.slice(0, Math.max(1, 40 - suffix.length - 1)) + '…' + suffix.slice(0, 7)
+    }
     const tail = message.text.length > 600 ? message.text.slice(0, 600) + '…' : message.text
     return '〔@' + label + '〕【房间消息·' + group.name + '】' + tail
       + '\n（要看全文：room_chat_read group="' + group.id + '" since=' + cursor
@@ -1199,7 +1230,9 @@ function setup(ctx, config) {
           await target.followup(payload)                   // 点名 = 唤醒（必要时先恢复会话）
           stats.woke += 1
         } else if (typeof handle.inject === 'function') {
-          handle.inject(payload)                           // 静默：不唤醒
+          // 必须 await：inject 可能是异步的，失败要能被下面的 catch 抓到。
+          // 否则游标已经推进到这一条（后面 setCursor），这个 agent 就永久漏掉它。
+          await handle.inject(payload)                     // 静默：不唤醒
           stats.delivered += 1
         } else {
           stats.skipped += 1
@@ -1265,6 +1298,14 @@ function setup(ctx, config) {
     room.sockets.clear()
     members.clear()
     tokens.clear()
+    // 关房要把「跨请求缓存」也清掉：会话→工作区映射、cwd 缓存、房客会话登记、
+    // 限流计数、握手标记都是上一个房间的状态；不清的话下次开房会沿用旧映射
+    // （旧目录权限、旧游标、旧限流），甚至让新房间的会话认错工作区。
+    try { sharedSessionPaths.clear() } catch { /* 忽略 */ }
+    try { sessionCwdCache.clear() } catch { /* 忽略 */ }
+    try { guestSessions.clear() } catch { /* 忽略 */ }
+    try { joinAttempts.clear() } catch { /* 忽略 */ }
+    try { handshakes.clear() } catch { /* 忽略 */ }
     if (server) {
       await new Promise((done) => {
         try { server.close(() => done()) } catch { done() }
@@ -1466,7 +1507,8 @@ function setup(ctx, config) {
 
     // 需要读/改写的响应（房客的会话列表、会话创建回执）先要求上游不压缩，
     // 否则我们改写明文 body 但保留 content-encoding，浏览器会 ERR_CONTENT_DECODING_FAILED。
-    if (guest && (pathname === '/api/session/list' || pathname === '/api/session/create')) {
+    const routePath = decodedPath  // 解码后的路径：分派/过滤/打标记都用它（见上）
+    if (guest && (routePath === '/api/session/list' || routePath === '/api/session/create')) {
       delete headers['accept-encoding']
     }
 
@@ -1475,7 +1517,7 @@ function setup(ctx, config) {
 
     // 房客的信封需要先读 body 才能判定（session/create 的落点、/permission 与 settings 改写入口）。
     const inspectBody = Boolean(guest) && req.method === 'POST' &&
-      guest.inspectEndpoints.has(pathname)
+      guest.inspectEndpoints.has(routePath)
     let pendingCreate = null
 
     const upstream = httpRequest({
@@ -1547,13 +1589,13 @@ function setup(ctx, config) {
       if (outHeaders['set-cookie']) {
         outHeaders['set-cookie'] = rewriteSetCookie(outHeaders['set-cookie'], inboundProto)
       }
-      if (guest && pathname === '/api/session/list' && /application\/json/i.test(type)) {
+      if (guest && routePath === '/api/session/list' && /application\/json/i.test(type)) {
         // 会话列表带 cwd：按策略过滤掉被封锁工作区里的会话，避免路径和标题泄漏。
         const chunks = []
         response.on('data', (chunk) => chunks.push(chunk))
         response.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8')
-          const filtered = guest.filterResponse(pathname, text) || text
+          const filtered = guest.filterResponse(routePath, text) || text
           delete outHeaders['content-encoding']
           delete outHeaders['content-length']
           outHeaders['content-type'] = 'application/json; charset=utf-8'
@@ -1565,7 +1607,7 @@ function setup(ctx, config) {
         response.on('error', () => { try { res.destroy() } catch { /* 忽略 */ } })
         return
       }
-      if (guest && pathname === '/api/session/create' && /application\/json/i.test(type)) {
+      if (guest && routePath === '/api/session/create' && /application\/json/i.test(type)) {
         // 记下房客新建的会话，交给 session/created 钉权限。
         const chunks = []
         response.on('data', (chunk) => chunks.push(chunk))
@@ -1632,14 +1674,14 @@ function setup(ctx, config) {
         // 映射平时靠 session/list 回执与 WS 的 workspace 帧学，但页面上任何一步没走到
         // （换了连接、还没拉列表、列表接口形状变了）就会一路上被判 workspace-blocked ——
         // 房客看到的就是「这个目录房主没有开放」。这里补一手：直接从宿主侧问出 cwd。
-        if (guest && pathname === '/api/session/prompt') {
+        if (guest && routePath === '/api/session/prompt') {
           const target = promptSessionId(text)
           if (target && !guest.sessionPath(target)) {
             const cwd = await sessionCwdOf(target)
             if (cwd) guest.rememberSessionMode(target, cwd)
           }
         }
-        const verdict = guest.judgeBody(pathname, text)
+        const verdict = guest.judgeBody(routePath, text)
         if (verdict && verdict.deny) {
           // 用 200 + 失败信封，房客才会看到中文说明而不是 HTTP 403 的默认报错
           sendDenyEnvelope(res, verdict.deny, text)
@@ -1648,7 +1690,7 @@ function setup(ctx, config) {
         if (verdict && verdict.create) pendingCreate = verdict.create
         // 房客发来的指令打上「谁说的」标记：DSH 的用户消息没有作者字段，
         // 不打标记的话房主和模型都分不清是哪个访客发的。
-        if (pathname === '/api/session/prompt') {
+        if (routePath === '/api/session/prompt') {
           let who = null
           try { who = authMember(req, new URL(String(req.url || '/'), 'http://room.invalid')) } catch { who = null }
           if (who && who.kind !== 'host') {
@@ -1730,8 +1772,19 @@ function setup(ctx, config) {
         if (head && head.length) {
           try { upstreamSocket.write(toServer.push(head)) } catch { /* 忽略 */ }
         }
-        upstreamSocket.on('data', (chunk) => { try { socket.write(toClient.push(chunk)) } catch { /* 忽略 */ } })
-        socket.on('data', (chunk) => { try { upstreamSocket.write(toServer.push(chunk)) } catch { /* 忽略 */ } })
+        // 帧解析失败（帧过大/缓冲区溢出）不是「忽略一下」的事：这类连接只可能是分片帧或
+        // 恶意负载，两边都断掉，别让它一直占着 socket（2026-10-25 审计）。
+        const closeBoth = (why) => {
+          try { socket.destroy() } catch { /* 忽略 */ }
+          try { upstreamSocket.destroy() } catch { /* 忽略 */ }
+          try { say('warn', '[' + NAME + '] 房间代理断开一条 WS：' + why) } catch { /* 忽略 */ }
+        }
+        upstreamSocket.on('data', (chunk) => {
+          try { socket.write(toClient.push(chunk)) } catch (error) { closeBoth(error && error.message || 'frame-parse') }
+        })
+        socket.on('data', (chunk) => {
+          try { upstreamSocket.write(toServer.push(chunk)) } catch (error) { closeBoth(error && error.message || 'frame-parse') }
+        })
       } else {
         if (upstreamHead && upstreamHead.length) {
           try { socket.write(upstreamHead) } catch { /* 忽略 */ }
@@ -1785,6 +1838,18 @@ function setup(ctx, config) {
       String(req.socket.remoteAddress || '')
 
     try {
+      // ── 统一闸门：所有 /api/host/* 只给「房主本机」用 ──
+      // 以前是每个 handler 自己记得写 isDirectHost()，结果漏了 policy / fs / start / stop / kick
+      // 五条（2026-10-25 实测：房客在 8787 上带 x-forwarded-for 就能读到工作区策略、
+      // 列 C:\Windows、甚至把房间停掉）。这里放在路由匹配之前统一挡，
+      // 以后新加 host 路由不必再靠记性；handler 里原有的 isDirectHost 保留当第二道。
+      if (path === PREFIX + '/api/host' || path.startsWith(PREFIX + '/api/host/')) {
+        if (!isDirectHost(req)) {
+          sendJson(res, 403, denyBody('host-only'), cors)
+          return
+        }
+      }
+
       // 前端用它判断「我现在是房主还是房客」：房主直连 loopback，房客一定经代理。
       // 房客页面据此把侧栏换成本地访客身份，不依赖 localStorage 里有没有旧记录。
       if (path === PREFIX + '/api/self') {
@@ -1952,7 +2017,7 @@ function setup(ctx, config) {
           groupId,
           from: { kind: who.kind, id: who.id, name: who.name, avatar: who.avatar || '' },
           text: body.text,
-          to: splitTargets(body.to),
+          to: splitTargets(body.to, aliasesInGroup(groupId)),
         })
         if (result.error) {
           sendJson(res, 400, { ok: false, error: result.error }, cors)
@@ -2464,15 +2529,23 @@ function setup(ctx, config) {
           return {
             ok: true,
             self: agent.id,
-            groups: chat.listGroups().map((group) => ({
-              id: group.id,
-              name: group.name,
-              agents: group.agents.map((item) => (item.alias ? item.title + ' (' + item.alias + ')' : item.title)),
-              lastText: group.lastText,
-              lastAt: group.lastAt,
-              joined: chat.isAgentMember(group.id, agent.id),
-              unread: chat.isAgentMember(group.id, agent.id) ? chat.pendingFor(agent.id, group.id).length : 0,
-            })),
+            groups: chat.listGroups().map((group) => {
+              // 没被拉进的群只给「存在」这一条信息：lastText/成员表都是群内内容，
+              // 全量吐出来等于让任意 agent 偷看所有群（2026-10-25 审计）。
+              const joined = chat.isAgentMember(group.id, agent.id)
+              if (!joined) {
+                return { id: group.id, name: group.name, joined: false }
+              }
+              return {
+                id: group.id,
+                name: group.name,
+                agents: group.agents.map((item) => (item.alias ? item.title + ' (' + item.alias + ')' : item.title)),
+                lastText: group.lastText,
+                lastAt: group.lastAt,
+                joined: true,
+                unread: chat.pendingFor(agent.id, group.id).length,
+              }
+            }),
           }
         },
       },
@@ -2506,11 +2579,18 @@ function setup(ctx, config) {
           }))
           const groups = chat.listGroups()
             .filter((group) => !groupId || group.id === groupId)
-            .map((group) => ({
-              id: group.id,
-              name: group.name,
-              agents: group.agents.map((item) => ({ id: item.id, title: item.title, alias: item.alias || '' })),
-            }))
+            .map((group) => {
+              // 同 room_chat_list：没入群的成员表不给（群成员本身就是群内信息）
+              if (!chat.isAgentMember(group.id, agentInfo(exec).id)) {
+                return { id: group.id, name: group.name, joined: false }
+              }
+              return {
+                id: group.id,
+                name: group.name,
+                joined: true,
+                agents: group.agents.map((item) => ({ id: item.id, title: item.title, alias: item.alias || '' })),
+              }
+            })
           return {
             ok: true,
             note: whoNote,
@@ -2592,7 +2672,7 @@ function setup(ctx, config) {
             groupId,
             from: { kind: 'agent', id: agent.id, name: agent.title },
             text: args && args.text,
-            to: splitTargets(args && args.to),
+            to: splitTargets(args && args.to, aliasesInGroup(groupId)),
           })
           if (result.error) return { ok: false, error: result.error, group: groupId }
           const pushed = await Promise.race([
